@@ -2,6 +2,6 @@
   "name": "tg-bot",
   "version": "0.1.0",
   "type": "module",
-  "scripts": { "start": "node api/webhook.js" },
+  "engines": { "node": ">=18" },
   "dependencies": { "grammy": "^1.23.0" }
 }
