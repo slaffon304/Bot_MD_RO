@@ -135,6 +135,73 @@ async function summarizeWithSources({ question, searchData, model, lang }) {
   return r.choices?.[0]?.message?.content || (lang==="ro"?"Nu am putut genera răspuns.":"Couldn't generate an answer.");
 }
 
+// ── Нормализация опечаток и временных слов (typo‑tolerant) ─────────
+function rmDiacriticsRo(s) {
+  return (s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[ăâ]/g, "a")
+    .replace(/[î]/g, "i")
+    .replace(/[șş]/g, "s")
+    .replace(/[țţ]/g, "t");
+}
+function levenshtein(a, b) {
+  a = a || ""; b = b || "";
+  const m = a.length, n = b.length;
+  const dp = new Array(n + 1).fill(0).map((_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const temp = dp[j];
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + cost);
+      prev = temp;
+    }
+  }
+  return dp[n];
+}
+function fuzzyHasToken(token, dict) {
+  token = rmDiacriticsRo(token.toLowerCase());
+  return dict.some(w => levenshtein(token, rmDiacriticsRo(w)) <= 1);
+}
+function normalizeTimeAndQuery(text, lang) {
+  const tokens = (text || "")
+    .toLowerCase()
+    .split(/[^a-zăâîșțşţa-яё0-9]+/i)
+    .filter(Boolean);
+
+  const roTomorrow = ["mâine", "maine", "mîine"];
+  const roToday    = ["azi", "astăzi", "astazi"];
+  const enTomorrow = ["tomorrow", "tmrw", "tmr", "tommorow", "tomorow", "tommorrow"];
+  const enToday    = ["today", "2day", "td"];
+  const ruTomorrow = ["завтра"];
+  const ruToday    = ["сегодня", "сейчас"];
+
+  let timeframe = null;
+  for (const t of tokens) {
+    if (fuzzyHasToken(t, roTomorrow) || fuzzyHasToken(t, enTomorrow) || fuzzyHasToken(t, ruTomorrow)) {
+      timeframe = "tomorrow"; break;
+    }
+    if (fuzzyHasToken(t, roToday) || fuzzyHasToken(t, enToday) || fuzzyHasToken(t, ruToday)) {
+      timeframe = timeframe || "today";
+    }
+  }
+
+  // Добавляем языковые «подсказки» в запрос, чтобы поиск понял временную форму
+  let q = text || "";
+  if (timeframe === "tomorrow") {
+    if (lang === "ro") q += " mâine maine";
+    else if (lang === "ru") q += " завтра";
+    else q += " tomorrow";
+  } else if (timeframe === "today") {
+    if (lang === "ro") q += " azi";
+    else if (lang === "ru") q += " сегодня";
+    else q += " today";
+  }
+  return { timeframe, corrected: q.trim() };
+}
+
 // ── Chat modes ──────────────────────────────────────────────────────
 async function plainChat({ text, hist, model, lang }) {
   const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
@@ -160,8 +227,9 @@ async function chatWithAutoSearch({ text, hist, model, lang }) {
   const toolCalls = msg1?.tool_calls || [];
   if (toolCalls.length) {
     let args={}; try{ args = JSON.parse(toolCalls[0].function?.arguments || "{}"); }catch{}
-    const q = (args.query || text).toString(), maxRes = Number(args.max_results || 5);
-    const sr = await tavilySearch(q, maxRes);
+    const q = (args.query || text).toString();
+const { timeframe, corrected } = normalizeTimeAndQuery(q, lang);
+const sr = await tavilySearch(corrected, maxRes);
     if (!sr.ok) return sr.error==="NO_TAVILY_KEY" ? (lang==="ro"?"Adaugă TAVILY_API_KEY în Vercel.": "Add TAVILY_API_KEY in Vercel.") : `Search failed (${sr.error}).`;
     return await summarizeWithSources({ question:q, searchData:sr.data, model, lang });
   }
