@@ -4,13 +4,14 @@ import {
   getUserModel, setUserModel,
   getUserLang, setUserLang, setLangManual, isLangManual,
 } from "../lib/store.js";
+import content from "../content.json" assert { type: "json" };
 
 // ── Конфиг ──────────────────────────────────────────────────────────
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
-const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // по умолчанию 2 источника
-const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // по умолчанию 220 символов выдержки
+const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // лимит источников
+const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // длина выдержек
 
 function defaultModel() { return envModel || "gpt-4o-mini"; }
 function isToolCapableModel(m){ return /gpt-4o/i.test(m); }
@@ -22,7 +23,14 @@ function chunkAndReply(ctx, text) {
   return parts.reduce((p, t) => p.then(() => ctx.reply(t, { reply_to_message_id: ctx.message.message_id })), Promise.resolve());
 }
 
-// ── LLM клиент (OpenRouter) ─────────────────────────────────────────
+// ── Навтекст из JSON ────────────────────────────────────────────────
+const START_TEXTS = content?.start || {};
+const DEFAULT_LANG = content?.defaultLang || "ru";
+function getStartText(lang) {
+  return START_TEXTS[lang] || START_TEXTS[DEFAULT_LANG] || START_TEXTS.ru || START_TEXTS.ro || START_TEXTS.en || "";
+}
+
+// ── LLM (OpenRouter) ────────────────────────────────────────────────
 async function getLLMClient() {
   if (provider !== "openrouter") return null;
   const apiKey = process.env.OPENROUTER_API_KEY || "";
@@ -36,88 +44,41 @@ function detectLangFromTG(code) {
   const s = (code || "").toLowerCase().split("-")[0];
   return ["ru","ro","en"].includes(s) ? s : "en";
 }
-
-// балльный авто‑детектор по тексту (устойчив к опечаткам)
 function detectLangFromText(text) {
   if (!text) return null;
   const lower = text.toLowerCase();
-
-  // подсказки (включая частые опечатки)
   const roWords = ["este","sunt","mâine","maine","mîine","azi","astăzi","astazi","vreme","vremea","oraș","bună","salut","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți","balti"];
   const enWords = ["weather","wheather","forecast","tomorrow","tommorow","tomorow","tommorrow","today","hello","hi","city","ny","nyc","new york","what","how"];
-
   const roDiacritics = (text.match(/[ăâîșțĂÂÎȘȚ]/g) || []).length;
-  const enAsciiLetters = (text.match(/[a-z]/gi) || []).length; // латиница в целом
-
-  // считаем «очки»
-  let roScore = roDiacritics;
-  let enScore = 0;
-
-  // по словам-подсказкам
+  const enAscii = (text.match(/[a-z]/gi) || []).length;
+  let roScore = roDiacritics, enScore = enAscii > 0 ? 1 : 0;
   for (const w of roWords) if (lower.includes(w)) roScore += 2;
   for (const w of enWords) if (lower.includes(w)) enScore += 2;
-
-  // если латиницы много, чуть добавим EN
-  if (enAsciiLetters > 0) enScore += 1;
-
-  // если оба обнаружены — решаем по бóльшему счёту;
-  // при равенстве: если диакритик мало (<=1) и есть EN‑подсказки — выбираем EN
   if (enScore > roScore) return "en";
   if (roScore > enScore) return "ro";
   if (enScore === roScore) {
     if (roDiacritics <= 1 && enWords.some(w => lower.includes(w))) return "en";
     if (roWords.some(w => lower.includes(w))) return "ro";
   }
-  return null; // не уверены — пусть решит другой слой
+  return null;
 }
-
 async function resolveLang(ctx, text) {
   const userId = ctx.from.id;
   const saved = await getUserLang(userId);
   const manual = await isLangManual(userId);
   const tg = detectLangFromTG(ctx.from?.language_code);
   const fromText = detectLangFromText(text);
-
   if (manual) return saved || tg || "en";
   if (fromText && fromText !== saved) { await setUserLang(userId, fromText); return fromText; }
   if (saved) return saved;
   await setUserLang(userId, tg);
   return tg;
 }
-
 function sysPrompt(lang){
   if (lang === "ro") return "Ești un asistent concis și util. Răspunde în română.";
   if (lang === "en") return "You are a concise and helpful assistant. Answer in English.";
   return "Ты краткий и полезный ассистент. Отвечай по-русски.";
 }
-
-const NAV = {
-  ru: `Привет! 👋 Доступ к ИИ для текста, картинок, видео и музыки.
-Команды:
-• /model — выбрать модель (GPT‑4o‑mini, Llama, Mistral)
-• /new — новый диалог
-• /web запрос — ручной веб‑поиск
-• /lang ru|ro|en — язык интерфейса
-• /help — команды
-Скоро: /img, /video, /tts, /stats`,
-  ro: `Salut! 👋 Acces la AI pentru text, imagini, video și muzică.
-Comenzi:
-• /model — alege modelul (GPT‑4o‑mini, Llama, Mistral)
-• /new — dialog nou
-• /web întrebare — căutare web manuală
-• /lang ru|ro|en — limba interfeței
-• /help — comenzi
-În curând: /img, /video, /tts, /stats`,
-  en: `Hi! 👋 Access AI for text, images, video, and music.
-Commands:
-• /model — choose a model (GPT‑4o‑mini, Llama, Mistral)
-• /new — new chat
-• /web query — manual web search
-• /lang ru|ro|en — interface language
-• /help — commands
-Coming soon: /img, /video, /tts, /stats`
-};
-const langKB = new InlineKeyboard().text("RU","lang:ru").text("RO","lang:ro").text("EN","lang:en");
 
 // ── Web search (Tavily) ─────────────────────────────────────────────
 async function tavilySearch(query, maxResults) {
@@ -195,9 +156,9 @@ function normalizeTimeAndQuery(text, lang) {
 
 // ── Суммаризация (лимит источников + короткие выдержки) ────────────
 function summarizeSystem(lang){
-  const common = `Citează cel mult ${SOURCE_LIMIT} surse. Respectă timeframe (azi/today vs mâine/tomorrow). Doar fapte din Surse. Liste + referințe [1], [2]; la final — sursele.`;
+  const common = `Citează cel mult ${SOURCE_LIMIT} surse. Respectă timeframe (azi/today vs mâine/tomorrow). Doar fapte din Surse. Liste + [1], [2]; la final — sursele.`;
   if (lang==="ro") return "Ești un asistent web. Răspunde pe scurt în română. " + common;
-  if (lang==="en") return `You are a web assistant. Answer briefly in English. Cite at most ${SOURCE_LIMIT} sources. Respect the timeframe. Use only facts from Sources. Bullets + refs [1], [2]; add sources list at the end.`;
+  if (lang==="en") return `You are a web assistant. Answer briefly in English. Cite at most ${SOURCE_LIMIT} sources. Respect the timeframe. Use only facts from Sources. Bullets + [1], [2]; add sources list at the end.`;
   return `Ты веб‑ассистент. Отвечай кратко по‑русски. Не более ${SOURCE_LIMIT} источников. Соблюдай «сегодня/завтра». Только факты из Источников. Маркеры + [1], [2]; в конце — ссылки.`;
 }
 function dedupeAndPick(results) {
@@ -270,13 +231,13 @@ async function chatWithAutoSearch({ text, hist, model, lang }) {
   return plain || (lang==="ro"?"Încearcă din nou.":"Try again.");
 }
 
-// ── Модели и команды ────────────────────────────────────────────────
+// ── Модели/команды ─────────────────────────────────────────────────
 const MODEL_OPTIONS = [
   { id:"gpt-4o-mini", label:"gpt-4o-mini (smart web tools)" },
   { id:"meta-llama/llama-3.1-70b-instruct", label:"Llama 3.1 70B (budget)" },
   { id:"mistralai/mistral-small", label:"Mistral Small (fast/cheap)" }
 ];
-const KNOWN_CMDS = new Set(["start","help","lang","new","model","web"]);
+const KNOWN_CMDS = new Set(["start","help","lang","new","model","web","i"]);
 
 // ── Бот ─────────────────────────────────────────────────────────────
 let bot;
@@ -298,15 +259,17 @@ function getBot() {
     await next();
   });
 
-  // /start — сначала выбор языка, потом навигация
+  // /start → выбор языка → текст из JSON
   b.command("start", async (ctx) => {
-    await ctx.reply("Choose language / Alege limba / Выберите язык:", { reply_markup: langKB });
+    await ctx.reply("Choose language / Alege limba / Выберите язык:", {
+      reply_markup: new InlineKeyboard().text("RU","lang:ru").text("RO","lang:ro").text("EN","lang:en")
+    });
   });
 
-  // /help
+  // /help → текст из JSON
   b.command("help", async (ctx) => {
     const lang = await resolveLang(ctx, "");
-    await ctx.reply(NAV[lang]);
+    await ctx.reply(getStartText(lang));
   });
 
   // /lang — аргументом или кнопками
@@ -316,10 +279,10 @@ function getBot() {
       await setUserLang(ctx.from.id, arg);
       await setLangManual(ctx.from.id, true);
       await ctx.reply("OK");
-      await ctx.reply(NAV[arg]);
+      await ctx.reply(getStartText(arg));
       return;
     }
-    await ctx.reply("ru | ro | en", { reply_markup: langKB });
+    await ctx.reply("ru | ro | en", { reply_markup: new InlineKeyboard().text("RU","lang:ru").text("RO","lang:ro").text("EN","lang:en") });
   });
   b.callbackQuery(/^lang:(ru|ro|en)$/, async (ctx) => {
     const v = ctx.match[1];
@@ -327,8 +290,7 @@ function getBot() {
     await setLangManual(ctx.from.id, true);
     await ctx.answerCallbackQuery({ text: `Lang: ${v.toUpperCase()}` });
     try { await ctx.editMessageText("✓"); } catch {}
-    const nav = NAV[v] || NAV.en;
-    await ctx.reply(nav);
+    await ctx.reply(getStartText(v));
   });
 
   // /new
@@ -353,12 +315,12 @@ function getBot() {
     try { await ctx.editMessageText(`Current model: ${found.label}`); } catch {}
   });
 
-  // /web — ручной поиск (с нормализацией «today/tomorrow» и опечаток)
-  b.command("web", async (ctx) => {
+  // /web и /i — ручной поиск
+  b.command(["web","i"], async (ctx) => {
     const text = ctx.message.text || "";
-    const q = text.replace(/^\/web(@\S+)?\s*/i, "").trim();
+    const q = text.replace(/^\/(web|i)(@\S+)?\s*/i, "").trim();
     const lang = await resolveLang(ctx, q);
-    if (!q) { await ctx.reply(lang==="ro"?"Scrie: /web întrebarea":"Type: /web your query"); return; }
+    if (!q) { await ctx.reply(lang==="ro"?"Scrie: /i întrebarea":"Type: /i your query"); return; }
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
 
     const userModel = await getUserModel(ctx.from.id); const model = userModel || defaultModel();
@@ -367,7 +329,7 @@ function getBot() {
     if (!sr.ok) { await ctx.reply(sr.error==="NO_TAVILY_KEY" ? "Add TAVILY_API_KEY in Vercel" : `Search failed (${sr.error}).`); return; }
     const ans = await summarizeWithSources({ question:q, searchData:sr.data, model, lang });
     await chunkAndReply(ctx, ans);
-    await pushMessage(ctx.chat.id, { role:"user", content:`/web ${q}` });
+    await pushMessage(ctx.chat.id, { role:"user", content:`/i ${q}` });
     await pushMessage(ctx.chat.id, { role:"assistant", content: ans });
   });
 
@@ -411,4 +373,4 @@ export default async function handler(req, res) {
   const b = getBot(); if (!b) return res.status(200).send("NO_TOKEN");
   const handle = webhookCallback(b, "http");
   try { await handle(req, res); } catch { res.status(200).end(); }
-                          }
+}
