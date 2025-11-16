@@ -4,13 +4,12 @@ import {
   getUserModel, setUserModel,
   getUserLang, setUserLang, setLangManual, isLangManual,
 } from "../lib/store.js";
-import content from "../content.json" assert { type: "json" };
 
 // ── Конфиг ──────────────────────────────────────────────────────────
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
-const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // лимит источников
+const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // лимит источников в ответе
 const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // длина выдержек
 
 function defaultModel() { return envModel || "gpt-4o-mini"; }
@@ -23,11 +22,25 @@ function chunkAndReply(ctx, text) {
   return parts.reduce((p, t) => p.then(() => ctx.reply(t, { reply_to_message_id: ctx.message.message_id })), Promise.resolve());
 }
 
-// ── Навтекст из JSON ────────────────────────────────────────────────
-const START_TEXTS = content?.start || {};
-const DEFAULT_LANG = content?.defaultLang || "ru";
-function getStartText(lang) {
-  return START_TEXTS[lang] || START_TEXTS[DEFAULT_LANG] || START_TEXTS.ru || START_TEXTS.ro || START_TEXTS.en || "";
+// ── Навтекст из content.json (без import assert) ────────────────────
+const CONTENT_PATH = new URL("../content.json", import.meta.url);
+let CONTENT_CACHE = null;
+async function loadContent() {
+  if (CONTENT_CACHE) return CONTENT_CACHE;
+  try {
+    const { readFile } = await import("node:fs/promises");
+    const raw = await readFile(CONTENT_PATH, "utf8");
+    CONTENT_CACHE = JSON.parse(raw);
+  } catch {
+    CONTENT_CACHE = { defaultLang: "ru", start: { ru: "Добро пожаловать!" } };
+  }
+  return CONTENT_CACHE;
+}
+async function getStartText(lang) {
+  const content = await loadContent();
+  const START = content?.start || {};
+  const DEF = content?.defaultLang || "ru";
+  return START[lang] || START[DEF] || START.ru || START.ro || START.en || "";
 }
 
 // ── LLM (OpenRouter) ────────────────────────────────────────────────
@@ -44,16 +57,21 @@ function detectLangFromTG(code) {
   const s = (code || "").toLowerCase().split("-")[0];
   return ["ru","ro","en"].includes(s) ? s : "en";
 }
+// балльный авто‑детектор (устойчив к опечаткам)
 function detectLangFromText(text) {
   if (!text) return null;
   const lower = text.toLowerCase();
+
   const roWords = ["este","sunt","mâine","maine","mîine","azi","astăzi","astazi","vreme","vremea","oraș","bună","salut","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți","balti"];
   const enWords = ["weather","wheather","forecast","tomorrow","tommorow","tomorow","tommorrow","today","hello","hi","city","ny","nyc","new york","what","how"];
+
   const roDiacritics = (text.match(/[ăâîșțĂÂÎȘȚ]/g) || []).length;
   const enAscii = (text.match(/[a-z]/gi) || []).length;
+
   let roScore = roDiacritics, enScore = enAscii > 0 ? 1 : 0;
   for (const w of roWords) if (lower.includes(w)) roScore += 2;
   for (const w of enWords) if (lower.includes(w)) enScore += 2;
+
   if (enScore > roScore) return "en";
   if (roScore > enScore) return "ro";
   if (enScore === roScore) {
@@ -68,6 +86,7 @@ async function resolveLang(ctx, text) {
   const manual = await isLangManual(userId);
   const tg = detectLangFromTG(ctx.from?.language_code);
   const fromText = detectLangFromText(text);
+
   if (manual) return saved || tg || "en";
   if (fromText && fromText !== saved) { await setUserLang(userId, fromText); return fromText; }
   if (saved) return saved;
@@ -269,7 +288,7 @@ function getBot() {
   // /help → текст из JSON
   b.command("help", async (ctx) => {
     const lang = await resolveLang(ctx, "");
-    await ctx.reply(getStartText(lang));
+    await ctx.reply(await getStartText(lang));
   });
 
   // /lang — аргументом или кнопками
@@ -279,7 +298,7 @@ function getBot() {
       await setUserLang(ctx.from.id, arg);
       await setLangManual(ctx.from.id, true);
       await ctx.reply("OK");
-      await ctx.reply(getStartText(arg));
+      await ctx.reply(await getStartText(arg));
       return;
     }
     await ctx.reply("ru | ro | en", { reply_markup: new InlineKeyboard().text("RU","lang:ru").text("RO","lang:ro").text("EN","lang:en") });
@@ -290,7 +309,7 @@ function getBot() {
     await setLangManual(ctx.from.id, true);
     await ctx.answerCallbackQuery({ text: `Lang: ${v.toUpperCase()}` });
     try { await ctx.editMessageText("✓"); } catch {}
-    await ctx.reply(getStartText(v));
+    await ctx.reply(await getStartText(v));
   });
 
   // /new
