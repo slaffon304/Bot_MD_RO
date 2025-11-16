@@ -20,7 +20,7 @@ function chunkAndReply(ctx, text) {
   return parts.reduce((p, t) => p.then(() => ctx.reply(t, { reply_to_message_id: ctx.message.message_id })), Promise.resolve());
 }
 
-// ── LLM (OpenRouter) ────────────────────────────────────────────────
+// ── LLM клиент (OpenRouter) ─────────────────────────────────────────
 async function getLLMClient() {
   if (provider !== "openrouter") return null;
   const apiKey = process.env.OPENROUTER_API_KEY || "";
@@ -40,10 +40,10 @@ function detectLangFromText(text) {
   if (hasCyr) return "ru";
   const hasRoDiacritics = /[ăâîșțĂÂÎȘȚ]/.test(text);
   const t = text.toLowerCase();
-  const roWords = ["este","sunt","mâine","maine","azi","astăzi","vreme","vremea","oraș","salut","bună","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți"];
-  const enWords = ["is","are","tomorrow","today","weather","forecast","hello","hi","what","how","please","city"];
-  if (hasRoDiacritics || roWords.some(w => t.includes(w))) return "ro";
-  if (enWords.some(w => t.includes(w))) return "en";
+  const roHints = ["este","sunt","mâine","maine","mîine","azi","astăzi","astazi","vreme","vremea","oraș","salut","bună","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți"];
+  const enHints = ["is","are","tomorrow","tommorow","tomorow","tmrw","today","weather","forecast","city","hello","hi"];
+  if (hasRoDiacritics || roHints.some(w => t.includes(w))) return "ro";
+  if (enHints.some(w => t.includes(w))) return "en";
   return null;
 }
 async function resolveLang(ctx, text) {
@@ -52,14 +52,8 @@ async function resolveLang(ctx, text) {
   const manual = await isLangManual(userId);
   const tg = detectLangFromTG(ctx.from?.language_code);
   const fromText = detectLangFromText(text);
-
   if (manual) return saved || tg || "en";
-
-  // Авто: если текст уверенно указывает язык — используем и запоминаем
-  if (fromText && fromText !== saved) {
-    await setUserLang(userId, fromText);
-    return fromText;
-  }
+  if (fromText && fromText !== saved) { await setUserLang(userId, fromText); return fromText; }
   if (saved) return saved;
   await setUserLang(userId, tg);
   return tg;
@@ -72,7 +66,7 @@ function sysPrompt(lang){
 }
 
 const NAV = {
-  ru: `Привет! 👋 Я даю доступ к сильным ИИ для текста, картинок, видео и музыки.
+  ru: `Привет! 👋 Доступ к ИИ для текста, картинок, видео и музыки.
 Команды:
 • /model — выбрать модель (GPT‑4o‑mini, Llama, Mistral)
 • /new — новый диалог
@@ -80,7 +74,7 @@ const NAV = {
 • /lang ru|ro|en — язык интерфейса
 • /help — команды
 Скоро: /img, /video, /tts, /stats`,
-  ro: `Salut! 👋 Acces rapid la AI pentru text, imagini, video și muzică.
+  ro: `Salut! 👋 Acces la AI pentru text, imagini, video și muzică.
 Comenzi:
 • /model — alege modelul (GPT‑4o‑mini, Llama, Mistral)
 • /new — dialog nou
@@ -88,7 +82,7 @@ Comenzi:
 • /lang ru|ro|en — limba interfeței
 • /help — comenzi
 În curând: /img, /video, /tts, /stats`,
-  en: `Hi! 👋 Access top AI for text, images, video, and music.
+  en: `Hi! 👋 Access AI for text, images, video, and music.
 Commands:
 • /model — choose a model (GPT‑4o‑mini, Llama, Mistral)
 • /new — new chat
@@ -106,36 +100,15 @@ async function tavilySearch(query, maxResults = 5) {
   const resp = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // неделя, чтобы охватить и «завтра»
+    // неделя — чтобы охватить tomorrow/next day
     body: JSON.stringify({ api_key:key, query, search_depth:"basic", include_answer:false, time_range:"w", max_results:Math.min(Math.max(maxResults,1),8) })
   });
   if (!resp.ok) return { ok:false, error:`HTTP_${resp.status}` };
   const data = await resp.json();
   return { ok:true, data };
 }
-function summarizeSystem(lang){
-  const common = "Respectă formularea exactă a timpului din întrebare (azi/astăzi, mâine, săptămâna viitoare) | Respect the timeframe (today, tomorrow, next week) | Соблюдай временной запрос (сегодня, завтра, на неделе). Отвечай только по фактам из Источников, ставь ссылки [1], [2] и список источников в конце.";
-  if (lang==="ro") return "Ești un asistent web. Răspunde pe scurt în română. " + common;
-  if (lang==="en") return "You are a web assistant. Answer briefly in English. " + common;
-  return "Ты веб‑ассистент. Отвечай кратко по‑русски. " + common;
-}
-async function summarizeWithSources({ question, searchData, model, lang }) {
-  const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
-  const sources = (searchData?.results || []).slice(0,5);
-  if (!sources.length) return lang==="ro" ? "Nu am găsit rezultate." : lang==="en" ? "No results found." : "Ничего не найдено.";
-  const list = sources.map((s,i)=>`${i+1}. ${s.title||s.url} — ${s.url}`).join("\n");
-  const extracts = sources.map((s,i)=>`[${i+1}] ${String(s.content||"").slice(0,800)}`).join("\n\n");
-  const r = await client.chat.completions.create({
-    model, temperature:0.2, max_tokens:450,
-    messages:[
-      { role:"system", content: summarizeSystem(lang) },
-      { role:"user", content:`Question: ${question}\n\nSources:\n${list}\n\nExtracts:\n${extracts}` }
-    ]
-  });
-  return r.choices?.[0]?.message?.content || (lang==="ro"?"Nu am putut genera răspuns.":"Couldn't generate an answer.");
-}
 
-// ── Нормализация опечаток и временных слов (typo‑tolerant) ─────────
+// ── Нормализация опечаток (mîne→mâine/tomorow→tomorrow и т.п.) ──────
 function rmDiacriticsRo(s) {
   return (s || "")
     .normalize("NFD")
@@ -171,24 +144,16 @@ function normalizeTimeAndQuery(text, lang) {
     .split(/[^a-zăâîșțşţa-яё0-9]+/i)
     .filter(Boolean);
 
-  const roTomorrow = ["mâine", "maine", "mîine"];
-  const roToday    = ["azi", "astăzi", "astazi"];
-  const enTomorrow = ["tomorrow", "tmrw", "tmr", "tommorow", "tomorow", "tommorrow"];
-  const enToday    = ["today", "2day", "td"];
-  const ruTomorrow = ["завтра"];
-  const ruToday    = ["сегодня", "сейчас"];
+  const roTomorrow = ["mâine","maine","mîine"], roToday = ["azi","astăzi","astazi"];
+  const enTomorrow = ["tomorrow","tmrw","tmr","tommorow","tomorow","tommorrow"], enToday = ["today","2day","td"];
+  const ruTomorrow = ["завтра"], ruToday = ["сегодня","сейчас"];
 
   let timeframe = null;
   for (const t of tokens) {
-    if (fuzzyHasToken(t, roTomorrow) || fuzzyHasToken(t, enTomorrow) || fuzzyHasToken(t, ruTomorrow)) {
-      timeframe = "tomorrow"; break;
-    }
-    if (fuzzyHasToken(t, roToday) || fuzzyHasToken(t, enToday) || fuzzyHasToken(t, ruToday)) {
-      timeframe = timeframe || "today";
-    }
+    if (fuzzyHasToken(t, roTomorrow) || fuzzyHasToken(t, enTomorrow) || fuzzyHasToken(t, ruTomorrow)) { timeframe = "tomorrow"; break; }
+    if (fuzzyHasToken(t, roToday)    || fuzzyHasToken(t, enToday)    || fuzzyHasToken(t, ruToday))    { timeframe = timeframe || "today"; }
   }
 
-  // Добавляем языковые «подсказки» в запрос, чтобы поиск понял временную форму
   let q = text || "";
   if (timeframe === "tomorrow") {
     if (lang === "ro") q += " mâine maine";
@@ -200,6 +165,29 @@ function normalizeTimeAndQuery(text, lang) {
     else q += " today";
   }
   return { timeframe, corrected: q.trim() };
+}
+
+// ── Суммаризация ────────────────────────────────────────────────────
+function summarizeSystem(lang){
+  const common = "Respectă/Respect the timeframe (azi/astăzi/today vs mâine/tomorrow) exact cum este în întrebare. Folosește doar fapte din «Surse». Liste și referințe [1], [2]; la final — lista surselor.";
+  if (lang==="ro") return "Ești un asistent web. Răspunde pe scurt în română. " + common;
+  if (lang==="en") return "You are a web assistant. Answer briefly in English. " + common;
+  return "Ты веб‑ассистент. Отвечай кратко по‑русски. " + common;
+}
+async function summarizeWithSources({ question, searchData, model, lang }) {
+  const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
+  const sources = (searchData?.results || []).slice(0,5);
+  if (!sources.length) return lang==="ro" ? "Nu am găsit rezultate." : lang==="en" ? "No results found." : "Ничего не найдено.";
+  const list = sources.map((s,i)=>`${i+1}. ${s.title||s.url} — ${s.url}`).join("\n");
+  const extracts = sources.map((s,i)=>`[${i+1}] ${String(s.content||"").slice(0,800)}`).join("\n\n");
+  const r = await client.chat.completions.create({
+    model, temperature:0.2, max_tokens:450,
+    messages:[
+      { role:"system", content: summarizeSystem(lang) },
+      { role:"user", content:`Question: ${question}\n\nSources:\n${list}\n\nExtracts:\n${extracts}` }
+    ]
+  });
+  return r.choices?.[0]?.message?.content || (lang==="ro"?"Nu am putut genera răspuns.":"Couldn't generate an answer.");
 }
 
 // ── Chat modes ──────────────────────────────────────────────────────
@@ -227,11 +215,11 @@ async function chatWithAutoSearch({ text, hist, model, lang }) {
   const toolCalls = msg1?.tool_calls || [];
   if (toolCalls.length) {
     let args={}; try{ args = JSON.parse(toolCalls[0].function?.arguments || "{}"); }catch{}
-    const q = (args.query || text).toString();
-const { timeframe, corrected } = normalizeTimeAndQuery(q, lang);
-const sr = await tavilySearch(corrected, maxRes);
+    const q0 = (args.query || text).toString(), maxRes = Number(args.max_results || 5);
+    const { corrected } = normalizeTimeAndQuery(q0, lang);
+    const sr = await tavilySearch(corrected, maxRes);
     if (!sr.ok) return sr.error==="NO_TAVILY_KEY" ? (lang==="ro"?"Adaugă TAVILY_API_KEY în Vercel.": "Add TAVILY_API_KEY in Vercel.") : `Search failed (${sr.error}).`;
-    return await summarizeWithSources({ question:q, searchData:sr.data, model, lang });
+    return await summarizeWithSources({ question:q0, searchData:sr.data, model, lang });
   }
   const plain = msg1?.content?.trim();
   return plain || (lang==="ro"?"Încearcă din nou.":"Try again.");
@@ -265,7 +253,7 @@ function getBot() {
     await next();
   });
 
-  // /start — сначала выбор языка, затем навигация
+  // /start — сначала выбор языка, потом навигация
   b.command("start", async (ctx) => {
     await ctx.reply("Choose language / Alege limba / Выберите язык:", { reply_markup: langKB });
   });
@@ -319,15 +307,16 @@ function getBot() {
     try { await ctx.editMessageText(`Current model: ${found.label}`); } catch {}
   });
 
-  // /web — ручной веб‑поиск
+  // /web — ручной поиск (с нормализацией опечаток)
   b.command("web", async (ctx) => {
     const text = ctx.message.text || "";
     const q = text.replace(/^\/web(@\S+)?\s*/i, "").trim();
     const lang = await resolveLang(ctx, q);
     if (!q) { await ctx.reply(lang==="ro"?"Scrie: /web întrebarea":"Type: /web your query"); return; }
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
+
     const userModel = await getUserModel(ctx.from.id); const model = userModel || defaultModel();
-    const { timeframe, corrected } = normalizeTimeAndQuery(q, lang);
+    const { corrected } = normalizeTimeAndQuery(q, lang);
     const sr = await tavilySearch(corrected);
     if (!sr.ok) { await ctx.reply(sr.error==="NO_TAVILY_KEY" ? "Add TAVILY_API_KEY in Vercel" : `Search failed (${sr.error}).`); return; }
     const ans = await summarizeWithSources({ question:q, searchData:sr.data, model, lang });
@@ -336,7 +325,7 @@ function getBot() {
     await pushMessage(ctx.chat.id, { role:"assistant", content: ans });
   });
 
-  // Обычный чат (с авто‑определением языка по тексту)
+  // Обычный чат (с авто-языком и опечатками «сегодня/завтра»)
   b.on("message:text", async (ctx) => {
     const text = ctx.message.text?.trim() || ""; if (!text) return;
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
@@ -349,7 +338,8 @@ function getBot() {
     try {
       let answer;
       if (FORCE_WEB_FOR_OPEN && isOpenModelNeedingWeb(model)) {
-        const sr = await tavilySearch(text);
+        const { corrected } = normalizeTimeAndQuery(text, lang);
+        const sr = await tavilySearch(corrected);
         answer = sr.ok ? await summarizeWithSources({ question:text, searchData:sr.data, model, lang })
                        : await plainChat({ text, hist, model, lang });
       } else if (isToolCapableModel(model)) {
@@ -375,4 +365,4 @@ export default async function handler(req, res) {
   const b = getBot(); if (!b) return res.status(200).send("NO_TOKEN");
   const handle = webhookCallback(b, "http");
   try { await handle(req, res); } catch { res.status(200).end(); }
-                                                               }
+}
