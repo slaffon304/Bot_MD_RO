@@ -27,7 +27,7 @@ function chunkAndReply(ctx, text) {
   return tasks.reduce((p, t) => p.then(() => t), Promise.resolve());
 }
 
-// ── LLM (OpenRouter) ────────────────────────────────────────────────
+// ── LLM клиент (OpenRouter) ─────────────────────────────────────────
 async function getLLMClient() {
   if (provider !== "openrouter") return null;
   const apiKey = process.env.OPENROUTER_API_KEY || "";
@@ -36,7 +36,7 @@ async function getLLMClient() {
   return new OpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1" });
 }
 
-// ── Язык ────────────────────────────────────────────────────────────
+// ── Язык пользователя ───────────────────────────────────────────────
 function detectLang(code) {
   const s = (code || "").toLowerCase().split("-")[0];
   if (["ru", "ro", "en"].includes(s)) return s;
@@ -47,16 +47,19 @@ async function userLang(ctx) {
   const saved = await getUserLang(ctx.from.id);
   const manual = await isLangManual(ctx.from.id);
   if (!saved) { await setUserLang(ctx.from.id, current); return current; }
-  if (!manual && current && current !== saved) { await setUserLang(ctx.from.id, current); return current; }
+  if (!manual && current && current !== saved) {
+    await setUserLang(ctx.from.id, current);
+    return current;
+  }
   return saved || current || "en";
 }
 
-// ── Навигация ───────────────────────────────────────────────────────
+// ── Навигационные тексты ────────────────────────────────────────────
 const NAV = {
   ru: `Привет! 👋 Я даю доступ к сильным ИИ для текста, картинок, видео и музыки.
 Что умею:
 • Писать/переводить тексты, объяснять, писать код
-• Генерировать изображения и видео из текста
+• Генерировать изображения и видео
 • Работать с документами
 • Озвучивать текст и распознавать голос
 Полезно:
@@ -64,9 +67,9 @@ const NAV = {
 • /model — выбрать модель (GPT‑4o‑mini, Llama, Mistral)
 • /new — новый диалог
 • /web запрос — ручной веб‑поиск
-• /lang - выбор языка
 • /weather [город] — погода сейчас
 • /setcity [город] — город по умолчанию
+• /lang ru|ro|en — язык интерфейса
 • /unsubscribe — выключить утреннюю рассылку
 • /help — список возможностей
 Скоро: /img (картинки), /video (видео), /tts (озвучка), /stats (статистика)`,
@@ -81,9 +84,9 @@ Util:
 • /model — alege modelul (GPT‑4o‑mini, Llama, Mistral)
 • /new — dialog nou
 • /web întrebare — căutare web manuală
-• /lang - alegeți limba
 • /weather [oraș] — meteo acum
 • /setcity [oraș] — oraș implicit
+• /lang ru|ro|en — limba interfeței
 • /unsubscribe — oprește prognoza de dimineață
 • /help — comenzi
 În curând: /img, /video, /tts, /stats`,
@@ -98,20 +101,23 @@ Useful:
 • /model — choose a model (GPT‑4o‑mini, Llama, Mistral)
 • /new — new chat
 • /web query — manual web search
-• /lang - choose lanquage
 • /weather [city] — weather now
 • /setcity [city] — default city
+• /lang ru|ro|en — interface language
 • /unsubscribe — stop morning weather
 • /help — commands
 Coming soon: /img, /video, /tts, /stats`
 };
 const BTN = {
-  ru: { share: "📍 Поделиться локацией", type: "✏️ Указать город", ask: "Чтобы получать прогноз погоды в 06:00, поделитесь локацией или нажмите «✏️ Указать город»" },
-  ro: { share: "📍 Trimite locația",     type: "✏️ Setează orașul", ask: "Pentru a primi prognoză meteo la 06:00, trimite locația sau apasă «✏️ Setează orașul»" },
+  ru: { share: "📍 Поделиться локацией", type: "✏️ Указать город", ask: "Чтобы присылать прогноз в 06:00, поделитесь локацией или нажмите «✏️ Указать город»" },
+  ro: { share: "📍 Trimite locația",     type: "✏️ Setează orașul", ask: "Pentru prognoză la 06:00, trimite locația sau apasă «✏️ Setează orașul»" },
   en: { share: "📍 Share location",       type: "✏️ Set city",       ask: "For 06:00 forecast, share location or tap «✏️ Set city»" }
 };
+function langKeyboard() {
+  return new InlineKeyboard().text("RU", "lang:ru").text("RO", "lang:ro").text("EN", "lang:en");
+}
 
-// ── Поиск (Tavily) и суммаризация ───────────────────────────────────
+// ── Поиск (Tavily) + суммаризация ───────────────────────────────────
 async function tavilySearch(query, maxResults = 5) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return { ok: false, error: "NO_TAVILY_KEY" };
@@ -212,13 +218,13 @@ function formatWeatherNow(w, lang, place) {
   return f();
 }
 
-// ── Модели /model ───────────────────────────────────────────────────
+// ── Модели для /model ───────────────────────────────────────────────
 const MODEL_OPTIONS = [
   { id: "gpt-4o-mini", label: "gpt-4o-mini (качественно/недорого)" },
   { id: "meta-llama/llama-3.1-70b-instruct", label: "Llama 3.1 70B (бюджет)" },
   { id: "mistralai/mistral-small", label: "Mistral Small (очень быстро/дешево)" }
 ];
-const KNOWN_CMDS = new Set(["start","help","lang ru","lang ro","lang en","unsubscribe","setcity","weather","new","model","web"]);
+const KNOWN_CMDS = new Set(["start","help","lang","unsubscribe","setcity","weather","new","model","web"]);
 
 // ── Бот ─────────────────────────────────────────────────────────────
 let bot;
@@ -226,31 +232,51 @@ function getBot() {
   if (bot) return bot;
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) return null;
+
   const b = new Bot(token);
 
-  // Пред-мидлвар: режим ожидания города + неизвестные команды
+  // Пред-мидлвар: режим ожидания города + обработка кнопки "✏️ Указать город" + неизвестные команды
   b.use(async (ctx, next) => {
     if (ctx.message?.text) {
       const text = ctx.message.text.trim();
 
-      // Если ждём город — используем ближайший текст как название города
+      // 1) Если нажали "✏️ Указать город" (или RO/EN вариант) — включаем ожидание города
+      const langBtnVariants = [BTN.ru.type, BTN.ro.type, BTN.en.type];
+      if (langBtnVariants.includes(text)) {
+        const lang = await userLang(ctx);
+        await setAwaitingCity(ctx.from.id, 600);
+        const msg = lang === "ro" ? "Scrie numele orașului în următorul mesaj."
+                  : lang === "en" ? "Type the city name in the next message."
+                  : "Напиши название города следующим сообщением.";
+        await ctx.reply(msg);
+        return;
+      }
+
+      // 2) Если ждём город — следующий текст (без слеша) принимаем как город
       if (await isAwaitingCity(ctx.from.id) && !text.startsWith("/")) {
         const lang = await userLang(ctx);
         const g = await geocodeCity(text, lang);
         await clearAwaitingCity(ctx.from.id);
-        if (!g) { await ctx.reply(lang === "ro" ? "Nu am găsit orașul." : (lang === "en" ? "City not found." : "Город не найден.")); return; }
+        if (!g) {
+          const err = lang === "ro" ? "Nu am găsit orașul." : lang === "en" ? "City not found." : "Город не найден.";
+          await ctx.reply(err);
+          return;
+        }
         await setCity(ctx.from.id, g);
-        await ctx.reply((lang === "ro" ? "Setat: " : (lang === "en" ? "Set: " : "Установлен: ")) + `${g.name} (${g.lat.toFixed(2)}, ${g.lon.toFixed(2)})`);
-        return; // не пускаем дальше в чат-LLM
+        const ok = lang === "ro" ? "Setat: " : lang === "en" ? "Set: " : "Установлен: ";
+        await ctx.reply(ok + `${g.name} (${g.lat.toFixed(2)}, ${g.lon.toFixed(2)})`);
+        return;
       }
 
-      // Неизвестная команда
+      // 3) Неизвестные команды не пускаем в LLM
       if (text.startsWith("/")) {
         const m = text.match(/^\/(\w+)/);
         const cmd = (m?.[1] || "").toLowerCase();
         if (cmd && !KNOWN_CMDS.has(cmd)) {
           const lang = await userLang(ctx);
-          const msg = lang === "ro" ? "Comandă necunoscută. Vezi /help." : (lang === "en" ? "Unknown command. See /help." : "Неизвестная команда. Смотри /help.");
+          const msg = lang === "ro" ? "Comandă necunoscută. Vezi /help."
+                    : lang === "en" ? "Unknown command. See /help."
+                    : "Неизвестная команда. Смотри /help.";
           await ctx.reply(msg);
           return;
         }
@@ -259,6 +285,7 @@ function getBot() {
     await next();
   });
 
+  // Старт: язык, подписка, клавиатура, навигация + инлайн выбор языка
   b.command("start", async (ctx) => {
     const lang = await userLang(ctx);
     await subscribeWeather(ctx.from.id, ctx.chat.id);
@@ -267,8 +294,13 @@ function getBot() {
       .requestLocation(BTN[lang].share).row()
       .text(BTN[lang].type)
       .resized().oneTime();
+
     await ctx.reply(BTN[lang].ask, { reply_markup: kb });
-    await ctx.reply(NAV[lang]);
+    await ctx.reply(NAV[lang], { reply_markup: { remove_keyboard: true } });
+    await ctx.reply(
+      lang === "ro" ? "Alege limba:" : lang === "en" ? "Choose language:" : "Выберите язык:",
+      { reply_markup: langKeyboard() }
+    );
   });
 
   b.command("help", async (ctx) => {
@@ -276,12 +308,24 @@ function getBot() {
     await ctx.reply(NAV[lang]);
   });
 
+  // /lang: аргументом или инлайном
   b.command("lang", async (ctx) => {
-    const v = ((ctx.message.text || "").trim().split(/\s+/)[1] || "").toLowerCase();
-    if (!["ru","ro","en"].includes(v)) { await ctx.reply("Use: /lang ru | ro | en"); return; }
+    const arg = ((ctx.message.text || "").trim().split(/\s+/)[1] || "").toLowerCase();
+    if (["ru","ro","en"].includes(arg)) {
+      await setUserLang(ctx.from.id, arg);
+      await setLangManual(ctx.from.id, true);
+      await ctx.reply("OK");
+      await ctx.reply(NAV[arg]);
+      return;
+    }
+    await ctx.reply("ru | ro | en", { reply_markup: langKeyboard() });
+  });
+  b.callbackQuery(/^lang:(ru|ro|en)$/, async (ctx) => {
+    const v = ctx.match[1];
     await setUserLang(ctx.from.id, v);
-    await setLangManual(ctx.from.id, true); // фиксируем ручной выбор
-    await ctx.reply("OK");
+    await setLangManual(ctx.from.id, true);
+    await ctx.answerCallbackQuery({ text: `Lang: ${v.toUpperCase()}` });
+    await ctx.editMessageText("✓");
     await ctx.reply(NAV[v]);
   });
 
@@ -290,22 +334,22 @@ function getBot() {
     await ctx.reply("Рассылка погоды отключена.");
   });
 
+  // Установить город: аргументом или кнопкой → ожидание
   b.command("setcity", async (ctx) => {
     const lang = await userLang(ctx);
     const arg = (ctx.message.text || "").replace(/^\/setcity(@\S+)?\s*/i, "").trim();
     if (!arg) {
-      // Включаем «ожидание города» и просим просто написать название
       await setAwaitingCity(ctx.from.id, 600);
-      const msg = lang === "ro" ? "Scrie numele orașului în următorul mesaj." :
-                  (lang === "en" ? "Type the city name in the next message." :
-                                   "Напиши название города следующим сообщением.");
+      const msg = lang === "ro" ? "Scrie numele orașului în următorul mesaj."
+                : lang === "en" ? "Type the city name in the next message."
+                : "Напиши название города следующим сообщением.";
       await ctx.reply(msg);
       return;
     }
     const g = await geocodeCity(arg, lang);
-    if (!g) { await ctx.reply(lang === "ro" ? "Nu am găsit orașul." : (lang === "en" ? "City not found." : "Город не найден.")); return; }
+    if (!g) { await ctx.reply(lang === "ro" ? "Nu am găsit orașul." : lang === "en" ? "City not found." : "Город не найден."); return; }
     await setCity(ctx.from.id, g);
-    await ctx.reply((lang === "ro" ? "Setat: " : (lang === "en" ? "Set: " : "Установлен: ")) + `${g.name} (${g.lat.toFixed(2)}, ${g.lon.toFixed(2)})`);
+    await ctx.reply((lang === "ro" ? "Setat: " : lang === "en" ? "Set: " : "Установлен: ") + `${g.name} (${g.lat.toFixed(2)}, ${g.lon.toFixed(2)})`);
   });
 
   b.command("weather", async (ctx) => {
@@ -313,7 +357,13 @@ function getBot() {
     let g = await getCity(ctx.from.id);
     const arg = (ctx.message.text || "").replace(/^\/weather(@\S+)?\s*/i, "").trim();
     if (arg) g = (await geocodeCity(arg, lang)) || g;
-    if (!g) { await ctx.reply(lang === "ro" ? "Trimite locația sau folosește /setcity Oraș" : (lang === "en" ? "Share location or use /setcity City" : "Отправь локацию или /setcity Город")); return; }
+    if (!g) {
+      const msg = lang === "ro" ? "Trimite locația sau folosește /setcity Oraș"
+                : lang === "en" ? "Share location or use /setcity City"
+                : "Отправь локацию или /setcity Город";
+      await ctx.reply(msg);
+      return;
+    }
     const w = await weatherNow(g.lat, g.lon);
     await ctx.reply(formatWeatherNow(w, lang, g.name));
   });
@@ -324,7 +374,7 @@ function getBot() {
     const name = (await reverseGeocode(latitude, longitude, lang)) || "";
     await clearAwaitingCity(ctx.from.id);
     await setCity(ctx.from.id, { name: name || "—", lat: latitude, lon: longitude });
-    await ctx.reply((lang === "ro" ? "Salvat locul: " : (lang === "en" ? "Saved: " : "Сохранено: ")) + (name || `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`));
+    await ctx.reply((lang === "ro" ? "Salvat locul: " : lang === "en" ? "Saved: " : "Сохранено: ") + (name || `${latitude.toFixed(2)}, ${longitude.toFixed(2)}`));
   });
 
   b.command("new", async (ctx) => {
@@ -332,6 +382,7 @@ function getBot() {
     await ctx.reply("Окей, новый диалог.");
   });
 
+  // /model
   b.command("model", async (ctx) => {
     const kb = new InlineKeyboard();
     for (const m of MODEL_OPTIONS) kb.text(m.label, `m:${m.id}`).row();
@@ -404,4 +455,4 @@ export default async function handler(req, res) {
   const b = getBot(); if (!b) return res.status(200).send("NO_TOKEN");
   const handle = webhookCallback(b, "http");
   try { await handle(req, res); } catch { res.status(200).end(); }
-    }
+}
