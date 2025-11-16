@@ -2,17 +2,15 @@ import { Bot, webhookCallback, InlineKeyboard } from "grammy";
 
 // ── Конфиг ──────────────────────────────────────────────────────────
 const provider = (process.env.PROVIDER || "none").toLowerCase();
-const envModel = process.env.MODEL || ""; // можно задать через переменные Vercel
+const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
 
 function defaultModel() {
-  return envModel || "gpt-4o-mini"; // дефолт для OpenRouter, умеет tools
+  return envModel || "gpt-4o-mini"; // дефолт: умеет tools
 }
-
 function systemPrompt() {
   return "Ты краткий и полезный ассистент. Отвечай на языке пользователя.";
 }
-
 function chunkAndReply(ctx, text) {
   const max = 3800;
   const tasks = [];
@@ -22,7 +20,7 @@ function chunkAndReply(ctx, text) {
   return tasks.reduce((p, t) => p.then(() => t), Promise.resolve());
 }
 
-// ── Ленивая загрузка SDK и стора ────────────────────────────────────
+// ── Ленивая загрузка SDK/хранилища ──────────────────────────────────
 async function getLLMClient() {
   if (provider !== "openrouter") return null;
   const apiKey = process.env.OPENROUTER_API_KEY || "";
@@ -32,7 +30,7 @@ async function getLLMClient() {
 }
 async function loadStore() {
   const m = await import("../lib/store.js");
-  return m;
+  return m; // { getHistory, pushMessage, clearHistory, getUserModel, setUserModel }
 }
 
 // ── Веб‑поиск (Tavily) и суммаризация ───────────────────────────────
@@ -47,7 +45,7 @@ async function tavilySearch(query, maxResults = 5) {
       query,
       search_depth: "basic",
       include_answer: false,
-      time_range: "d", // последние сутки
+      time_range: "d",
       max_results: Math.min(Math.max(maxResults, 1), 8)
     })
   });
@@ -55,7 +53,6 @@ async function tavilySearch(query, maxResults = 5) {
   const data = await resp.json();
   return { ok: true, data };
 }
-
 async function summarizeWithSources(question, searchData, model) {
   const client = await getLLMClient();
   if (!client) throw new Error("NO_LLM");
@@ -69,8 +66,8 @@ async function summarizeWithSources(question, searchData, model) {
     {
       role: "system",
       content:
-        "Ты веб‑помощник. Если вопрос требует свежих фактов, используй только данные из 'Источников'. " +
-        "Делай маркированные пункты. Ссылки ставь в тексте по номерам [1], [2], а в конце — список источников."
+        "Ты веб‑помощник. Используй только факты из 'Источников'. " +
+        "Делай маркированные пункты. В тексте ставь ссылки по номерам [1], [2]. В конце — список источников."
     },
     { role: "user", content: `Вопрос: ${question}\n\nИсточники:\n${list}\n\nВыдержки:\n${extracts}` }
   ];
@@ -84,7 +81,7 @@ async function summarizeWithSources(question, searchData, model) {
   return r.choices?.[0]?.message?.content || "Не удалось сформировать ответ.";
 }
 
-// ── Вспомогательные определения моделей ─────────────────────────────
+// ── Помощники по моделям ────────────────────────────────────────────
 function isToolCapableModel(model) {
   return /gpt-4o/i.test(model);
 }
@@ -92,7 +89,7 @@ function isOpenModelNeedingWeb(model) {
   return /(meta-llama|llama|mistral)/i.test(model);
 }
 
-// ── Чат с авто‑поиском через tools (для gpt‑4o‑mini) ────────────────
+// ── Чат с авто‑поиском (tools) для gpt‑4o‑mini ──────────────────────
 async function chatWithAutoSearch({ text, hist, model }) {
   const client = await getLLMClient();
   if (!client) throw new Error("NO_LLM");
@@ -157,7 +154,7 @@ async function chatWithAutoSearch({ text, hist, model }) {
   return "Не удалось получить ответ. Попробуй переформулировать запрос.";
 }
 
-// ── Простой чат без tools ───────────────────────────────────────────
+// ── Простой чат без поиска ──────────────────────────────────────────
 async function plainChat({ text, hist, model }) {
   const client = await getLLMClient();
   if (!client) throw new Error("NO_LLM");
@@ -171,7 +168,7 @@ async function plainChat({ text, hist, model }) {
   return r.choices?.[0]?.message?.content || "Нет ответа от модели.";
 }
 
-// ── Модели на выбор (/model) ────────────────────────────────────────
+// ── Модели для /model ───────────────────────────────────────────────
 const MODEL_OPTIONS = [
   { id: "gpt-4o-mini", label: "gpt-4o-mini (качественно/недорого)" },
   { id: "meta-llama/llama-3.1-70b-instruct", label: "Llama 3.1 70B (бюджет)" },
@@ -284,3 +281,44 @@ function getBot() {
 
     try {
       let answer;
+
+      if (FORCE_WEB_FOR_OPEN && isOpenModelNeedingWeb(model)) {
+        const sr = await tavilySearch(text);
+        if (sr.ok) {
+          answer = await summarizeWithSources(text, sr.data, model);
+        } else {
+          // Если Tavily недоступен — мягкий откат в обычный чат
+          answer = await plainChat({ text, hist, model });
+        }
+      } else if (isToolCapableModel(model)) {
+        answer = await chatWithAutoSearch({ text, hist, model });
+      } else {
+        answer = await plainChat({ text, hist, model });
+      }
+
+      await pushMessage(ctx.chat.id, { role: "user", content: text });
+      await pushMessage(ctx.chat.id, { role: "assistant", content: answer });
+      await chunkAndReply(ctx, answer);
+    } catch (e) {
+      console.error("LLM/chat error:", e);
+      await ctx.reply("Ошибка при обработке запроса. Попробуй ещё раз.");
+    }
+  });
+
+  bot = b;
+  return bot;
+}
+
+// ── HTTP‑обработчик ─────────────────────────────────────────────────
+export default async function handler(req, res) {
+  if (req.method !== "POST") return res.status(200).send("OK");
+  const b = getBot();
+  if (!b) return res.status(200).send("NO_TOKEN");
+  const handle = webhookCallback(b, "http");
+  try {
+    await handle(req, res);
+  } catch (e) {
+    console.error("Webhook error:", e);
+    res.status(200).end();
+  }
+}
