@@ -9,9 +9,9 @@ import {
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
-const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));
-const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220));
-const PREMIUM_ALL = process.env.PREMIUM_ALL === "1"; // открыть все pro-модели для теста
+const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // лимит источников
+const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // длина выдержек
+const PREMIUM_ALL = process.env.PREMIUM_ALL === "1"; // открыть все pro‑модели для теста
 
 function defaultModel() { return envModel || "gpt-4o-mini"; }
 function isToolCapableModel(m){ return /gpt-4o/i.test(m); }
@@ -22,6 +22,9 @@ function chunkAndReply(ctx, text) {
   for (let i = 0; i < text.length; i += max) parts.push(text.slice(i, i + max));
   return parts.reduce((p, t) => p.then(() => ctx.reply(t, { reply_to_message_id: ctx.message.message_id })), Promise.resolve());
 }
+
+// Локальный кэш модели (если Redis недоступен)
+const MODEL_MEM = new Map();
 
 /* ========= content.json loader (без import assert) ========= */
 const CONTENT_PATH = new URL("../content.json", import.meta.url);
@@ -58,17 +61,22 @@ function detectLangFromTG(code) {
   const s = (code || "").toLowerCase().split("-")[0];
   return ["ru","ro","en"].includes(s) ? s : "en";
 }
-// авто‑детектор (устойчив к опечаткам)
+// устойчивый авто‑детектор (считает “очки” для RO/EN; кириллица → RU сразу)
 function detectLangFromText(text) {
   if (!text) return null;
+  if (/[А-Яа-яЁё\u0400-\u04FF]/.test(text)) return "ru";
+
   const lower = text.toLowerCase();
   const roWords = ["este","sunt","mâine","maine","mîine","azi","astăzi","astazi","vreme","vremea","oraș","bună","salut","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți","balti"];
   const enWords = ["weather","wheather","forecast","tomorrow","tommorow","tomorow","tommorrow","today","hello","hi","city","ny","nyc","new york","what","how"];
+
   const roDiacritics = (text.match(/[ăâîșțĂÂÎȘȚ]/g) || []).length;
   const enAscii = (text.match(/[a-z]/gi) || []).length;
+
   let roScore = roDiacritics, enScore = enAscii > 0 ? 1 : 0;
   for (const w of roWords) if (lower.includes(w)) roScore += 2;
   for (const w of enWords) if (lower.includes(w)) enScore += 2;
+
   if (enScore > roScore) return "en";
   if (roScore > enScore) return "ro";
   if (enScore === roScore) {
@@ -93,7 +101,7 @@ function sysPrompt(lang){
   if (lang === "ro") return "Ești un asistent concis și util. Răspunde în română.";
   if (lang === "en") return "You are a concise and helpful assistant. Answer in English.";
   return "Ты краткий и полезный ассистент. Отвечай по-русски.";
-                               }
+}
 
 /* ==================== Web search (Tavily) ==================== */
 async function tavilySearch(query, maxResults) {
@@ -236,7 +244,7 @@ const GPT_MODELS = [
   { key:"gemini_pro",   label:{ru:"Gemini 2.5 Pro", ro:"Gemini 2.5 Pro", en:"Gemini 2.5 Pro"},     model:"google/gemini-1.5-pro-latest",   tier:"pro" },
   { key:"gemini_flash", label:{ru:"Gemini 2.5 Flash", ro:"Gemini 2.5 Flash", en:"Gemini 2.5 Flash"}, model:"google/gemini-1.5-flash-latest", tier:"free" }
 ];
-function hasPremium(_userId) { return PREMIUM_ALL; } // потом подвяжем к оплате/Redis
+function hasPremium(_userId) { return PREMIUM_ALL; } // позже подвяжем к оплате/Redis
 
 function labelWithState(item, lang, selectedModel) {
   const base = item.label[lang] || item.label.en || item.key;
@@ -248,7 +256,7 @@ function labelWithState(item, lang, selectedModel) {
 }
 function gptKeyboard(lang, selectedModel) {
   const kb = new InlineKeyboard();
-  const perRow = 2; // можно 3 для вида как на твоём скрине
+  const perRow = 2; // можно 3 — будет “шире”
   for (let i = 0; i < GPT_MODELS.length; i += perRow) {
     const row = GPT_MODELS.slice(i, i + perRow);
     for (const item of row) kb.text(labelWithState(item, lang, selectedModel), `gptsel:${item.key}`);
@@ -344,6 +352,7 @@ function getBot() {
     const found = MODEL_OPTIONS.find((m) => m.id === chosen);
     if (!found) { await ctx.answerCallbackQuery({ text: "Unknown model", show_alert: true }); return; }
     await setUserModel(ctx.from.id, found.id);
+    MODEL_MEM.set(ctx.from.id, found.id); // кэш на случай отсутствия Redis
     await ctx.answerCallbackQuery({ text: `Model: ${found.label}` });
     try { await ctx.editMessageText(`Current model: ${found.label}`); } catch {}
   });
@@ -351,7 +360,7 @@ function getBot() {
   // /gpt — сетка моделей c замочками
   b.command("gpt", async (ctx) => {
     const lang = await resolveLang(ctx, "");
-    const sel = (await getUserModel(ctx.from.id)) || defaultModel();
+    const sel = (await getUserModel(ctx.from.id)) || MODEL_MEM.get(ctx.from.id) || defaultModel();
     const title = lang==="ro" ? "Alege modelul:" : lang==="en" ? "Choose a model:" : "Выберите модель:";
     await ctx.reply(title, { reply_markup: gptKeyboard(lang, sel) });
   });
@@ -363,6 +372,7 @@ function getBot() {
     const locked = item.tier === "pro" && !hasPremium(ctx.from.id);
     if (locked) { await ctx.answerCallbackQuery({ text: premiumMsg(lang), show_alert: true }); return; }
     await setUserModel(ctx.from.id, item.model);
+    MODEL_MEM.set(ctx.from.id, item.model); // кэш
     await ctx.answerCallbackQuery({ text: (lang==="ro"?"Model setat: ":"Model set: ") + (item.label[lang] || item.label.en) });
     try { await ctx.editMessageReplyMarkup({ reply_markup: gptKeyboard(lang, item.model) }); } catch {}
   });
@@ -379,7 +389,10 @@ function getBot() {
     const lang = await resolveLang(ctx, q);
     if (!q) { await ctx.reply(lang==="ro"?"Scrie: /i întrebarea":"Type: /i your query"); return; }
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
-    const userModel = await getUserModel(ctx.from.id); const model = userModel || defaultModel();
+
+    const userModel = (await getUserModel(ctx.from.id)) || MODEL_MEM.get(ctx.from.id);
+    const model = userModel || defaultModel();
+
     const { corrected } = normalizeTimeAndQuery(q, lang);
     const sr = await tavilySearch(corrected, SOURCE_LIMIT);
     if (!sr.ok) { await ctx.reply(sr.error==="NO_TAVILY_KEY" ? "Add TAVILY_API_KEY in Vercel" : `Search failed (${sr.error}).`); return; }
@@ -395,7 +408,7 @@ function getBot() {
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
 
     const hist = await getHistory(ctx.chat.id);
-    const userModel = await getUserModel(ctx.from.id);
+    const userModel = (await getUserModel(ctx.from.id)) || MODEL_MEM.get(ctx.from.id);
     const model = userModel || defaultModel();
     const lang = await resolveLang(ctx, text);
 
@@ -429,4 +442,4 @@ export default async function handler(req, res) {
   const b = getBot(); if (!b) return res.status(200).send("NO_TOKEN");
   const handle = webhookCallback(b, "http");
   try { await handle(req, res); } catch { res.status(200).end(); }
-            }
+}
