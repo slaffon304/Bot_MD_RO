@@ -64,7 +64,7 @@ const NAV = {
 • /model — выбрать модель (GPT‑4o‑mini, Llama, Mistral)
 • /new — новый диалог
 • /web запрос — ручной веб‑поиск
-• /lang ru /lang ro /lang en - выбор языка
+• /lang - выбор языка
 • /weather [город] — погода сейчас
 • /setcity [город] — город по умолчанию
 • /unsubscribe — выключить утреннюю рассылку
@@ -81,7 +81,7 @@ Util:
 • /model — alege modelul (GPT‑4o‑mini, Llama, Mistral)
 • /new — dialog nou
 • /web întrebare — căutare web manuală
-• /lang ru /lang ro /lang en - alegeți limba
+• /lang - alegeți limba
 • /weather [oraș] — meteo acum
 • /setcity [oraș] — oraș implicit
 • /unsubscribe — oprește prognoza de dimineață
@@ -98,7 +98,7 @@ Useful:
 • /model — choose a model (GPT‑4o‑mini, Llama, Mistral)
 • /new — new chat
 • /web query — manual web search
-• /lang ru /lang ro /lang en - choose lanquage
+• /lang - choose lanquage
 • /weather [city] — weather now
 • /setcity [city] — default city
 • /unsubscribe — stop morning weather
