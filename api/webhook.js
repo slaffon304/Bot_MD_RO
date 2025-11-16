@@ -9,6 +9,8 @@ import {
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
+const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));   // 2 по умолчанию
+const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // 220 по умолчанию
 
 function defaultModel() { return envModel || "gpt-4o-mini"; }
 function isToolCapableModel(m){ return /gpt-4o/i.test(m); }
@@ -94,21 +96,22 @@ Coming soon: /img, /video, /tts, /stats`
 const langKB = new InlineKeyboard().text("RU","lang:ru").text("RO","lang:ro").text("EN","lang:en");
 
 // ── Web search (Tavily) ─────────────────────────────────────────────
-async function tavilySearch(query, maxResults = 5) {
+async function tavilySearch(query, maxResults) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return { ok:false, error:"NO_TAVILY_KEY" };
+  const wanted = Math.min(Math.max(maxResults || SOURCE_LIMIT, 1), SOURCE_LIMIT + 1); // чуть больше лимита на входе
   const resp = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // неделя — чтобы охватить tomorrow/next day
-    body: JSON.stringify({ api_key:key, query, search_depth:"basic", include_answer:false, time_range:"w", max_results:Math.min(Math.max(maxResults,1),8) })
+    // неделя — чтобы захватывать tomorrow/next day и свежие новости
+    body: JSON.stringify({ api_key:key, query, search_depth:"basic", include_answer:false, time_range:"w", max_results:wanted })
   });
   if (!resp.ok) return { ok:false, error:`HTTP_${resp.status}` };
   const data = await resp.json();
   return { ok:true, data };
 }
 
-// ── Нормализация опечаток (mîne→mâine/tomorow→tomorrow и т.п.) ──────
+// ── Нормализация опечаток (mîne→mâine/tomorow→tomorrow) ────────────
 function rmDiacriticsRo(s) {
   return (s || "")
     .normalize("NFD")
@@ -167,19 +170,41 @@ function normalizeTimeAndQuery(text, lang) {
   return { timeframe, corrected: q.trim() };
 }
 
-// ── Суммаризация ────────────────────────────────────────────────────
+// ── Суммаризация (с лимитом источников и короткими выдержками) ─────
 function summarizeSystem(lang){
-  const common = "Respectă/Respect the timeframe (azi/astăzi/today vs mâine/tomorrow) exact cum este în întrebare. Folosește doar fapte din «Surse». Liste și referințe [1], [2]; la final — lista surselor.";
+  const common = `Citează cel mult ${SOURCE_LIMIT} surse. Respectă timeframe (azi/today vs mâine/tomorrow). Folosește doar fapte din Surse. Liste + referințe [1], [2]; la final — lista surselor.`;
   if (lang==="ro") return "Ești un asistent web. Răspunde pe scurt în română. " + common;
-  if (lang==="en") return "You are a web assistant. Answer briefly in English. " + common;
-  return "Ты веб‑ассистент. Отвечай кратко по‑русски. " + common;
+  if (lang==="en") return `You are a web assistant. Answer briefly in English. Cite at most ${SOURCE_LIMIT} sources. Respect the timeframe. Use only facts from Sources. Bullets + refs [1], [2]; add sources list at the end.`;
+  return `Ты веб‑ассистент. Отвечай кратко по‑русски. Укажи не более ${SOURCE_LIMIT} источников. Соблюдай «сегодня/завтра». Только факты из Источников. Маркеры + ссылки [1], [2]; в конце — список источников.`;
+}
+function dedupeAndPick(results) {
+  const picked = [];
+  const seen = new Set();
+  for (const r of results || []) {
+    try {
+      const host = new URL(r.url).hostname.replace(/^www\./,"");
+      if (seen.has(host)) continue;
+      seen.add(host);
+      picked.push(r);
+      if (picked.length >= SOURCE_LIMIT) break;
+    } catch {
+      // если URL кривой — пропускаем
+    }
+  }
+  return picked;
+}
+function shortText(s) {
+  const clean = String(s || "").replace(/\s+/g, " ").trim();
+  return clean.slice(0, EXTRACT_CHARS);
 }
 async function summarizeWithSources({ question, searchData, model, lang }) {
   const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
-  const sources = (searchData?.results || []).slice(0,5);
-  if (!sources.length) return lang==="ro" ? "Nu am găsit rezultate." : lang==="en" ? "No results found." : "Ничего не найдено.";
-  const list = sources.map((s,i)=>`${i+1}. ${s.title||s.url} — ${s.url}`).join("\n");
-  const extracts = sources.map((s,i)=>`[${i+1}] ${String(s.content||"").slice(0,800)}`).join("\n\n");
+  const selected = dedupeAndPick(searchData?.results || []);
+  if (!selected.length) return lang==="ro" ? "Nu am găsit rezultate." : lang==="en" ? "No results found." : "Ничего не найдено.";
+
+  const list = selected.map((s,i)=>`${i+1}. ${s.title||s.url} — ${s.url}`).join("\n");
+  const extracts = selected.map((s,i)=>`[${i+1}] ${shortText(s.content)}`).join("\n\n");
+
   const r = await client.chat.completions.create({
     model, temperature:0.2, max_tokens:450,
     messages:[
@@ -204,7 +229,7 @@ async function chatWithAutoSearch({ text, hist, model, lang }) {
   const tools = [{
     type:"function",
     function:{ name:"web_search", description:"Search the web for fresh data",
-      parameters:{ type:"object", properties:{ query:{type:"string"}, max_results:{type:"integer",default:5} }, required:["query"] } }
+      parameters:{ type:"object", properties:{ query:{type:"string"}, max_results:{type:"integer",default:SOURCE_LIMIT} }, required:["query"] } }
   }];
   const r1 = await client.chat.completions.create({
     model, temperature:0.6, max_tokens:300,
@@ -215,9 +240,9 @@ async function chatWithAutoSearch({ text, hist, model, lang }) {
   const toolCalls = msg1?.tool_calls || [];
   if (toolCalls.length) {
     let args={}; try{ args = JSON.parse(toolCalls[0].function?.arguments || "{}"); }catch{}
-    const q0 = (args.query || text).toString(), maxRes = Number(args.max_results || 5);
+    const q0 = (args.query || text).toString();
     const { corrected } = normalizeTimeAndQuery(q0, lang);
-    const sr = await tavilySearch(corrected, maxRes);
+    const sr = await tavilySearch(corrected, SOURCE_LIMIT);
     if (!sr.ok) return sr.error==="NO_TAVILY_KEY" ? (lang==="ro"?"Adaugă TAVILY_API_KEY în Vercel.": "Add TAVILY_API_KEY in Vercel.") : `Search failed (${sr.error}).`;
     return await summarizeWithSources({ question:q0, searchData:sr.data, model, lang });
   }
@@ -282,7 +307,8 @@ function getBot() {
     await setLangManual(ctx.from.id, true);
     await ctx.answerCallbackQuery({ text: `Lang: ${v.toUpperCase()}` });
     try { await ctx.editMessageText("✓"); } catch {}
-    await ctx.reply(NAV[v]);
+    const nav = NAV[v] || NAV.en;
+    await ctx.reply(nav);
   });
 
   // /new
@@ -317,7 +343,7 @@ function getBot() {
 
     const userModel = await getUserModel(ctx.from.id); const model = userModel || defaultModel();
     const { corrected } = normalizeTimeAndQuery(q, lang);
-    const sr = await tavilySearch(corrected);
+    const sr = await tavilySearch(corrected, SOURCE_LIMIT);
     if (!sr.ok) { await ctx.reply(sr.error==="NO_TAVILY_KEY" ? "Add TAVILY_API_KEY in Vercel" : `Search failed (${sr.error}).`); return; }
     const ans = await summarizeWithSources({ question:q, searchData:sr.data, model, lang });
     await chunkAndReply(ctx, ans);
@@ -325,7 +351,7 @@ function getBot() {
     await pushMessage(ctx.chat.id, { role:"assistant", content: ans });
   });
 
-  // Обычный чат (с авто-языком и опечатками «сегодня/завтра»)
+  // Обычный чат
   b.on("message:text", async (ctx) => {
     const text = ctx.message.text?.trim() || ""; if (!text) return;
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
@@ -339,7 +365,7 @@ function getBot() {
       let answer;
       if (FORCE_WEB_FOR_OPEN && isOpenModelNeedingWeb(model)) {
         const { corrected } = normalizeTimeAndQuery(text, lang);
-        const sr = await tavilySearch(corrected);
+        const sr = await tavilySearch(corrected, SOURCE_LIMIT);
         answer = sr.ok ? await summarizeWithSources({ question:text, searchData:sr.data, model, lang })
                        : await plainChat({ text, hist, model, lang });
       } else if (isToolCapableModel(model)) {
