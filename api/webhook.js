@@ -56,7 +56,7 @@ const NAV = {
   ru: `Привет! 👋 Я даю доступ к сильным ИИ для текста, картинок, видео и музыки.
 Что умею:
 • Писать/переводить тексты, объяснять, писать код
-• Генерировать изображения и видео
+• Генерировать изображения и видео из текста
 • Работать с документами
 • Озвучивать текст и распознавать голос
 Полезно:
@@ -64,6 +64,7 @@ const NAV = {
 • /model — выбрать модель (GPT‑4o‑mini, Llama, Mistral)
 • /new — новый диалог
 • /web запрос — ручной веб‑поиск
+• /lang ru /lang ro /lang en - выбор языка
 • /weather [город] — погода сейчас
 • /setcity [город] — город по умолчанию
 • /unsubscribe — выключить утреннюю рассылку
@@ -80,6 +81,7 @@ Util:
 • /model — alege modelul (GPT‑4o‑mini, Llama, Mistral)
 • /new — dialog nou
 • /web întrebare — căutare web manuală
+• /lang ru /lang ro /lang en - alegeți limba
 • /weather [oraș] — meteo acum
 • /setcity [oraș] — oraș implicit
 • /unsubscribe — oprește prognoza de dimineață
@@ -96,6 +98,7 @@ Useful:
 • /model — choose a model (GPT‑4o‑mini, Llama, Mistral)
 • /new — new chat
 • /web query — manual web search
+• /lang ru /lang ro /lang en - choose lanquage
 • /weather [city] — weather now
 • /setcity [city] — default city
 • /unsubscribe — stop morning weather
@@ -103,8 +106,8 @@ Useful:
 Coming soon: /img, /video, /tts, /stats`
 };
 const BTN = {
-  ru: { share: "📍 Поделиться локацией", type: "✏️ Указать город", ask: "Чтобы присылать прогноз в 06:00, поделитесь локацией или нажмите «✏️ Указать город»" },
-  ro: { share: "📍 Trimite locația",     type: "✏️ Setează orașul", ask: "Pentru prognoză la 06:00, trimite locația sau apasă «✏️ Setează orașul»" },
+  ru: { share: "📍 Поделиться локацией", type: "✏️ Указать город", ask: "Чтобы получать прогноз погоды в 06:00, поделитесь локацией или нажмите «✏️ Указать город»" },
+  ro: { share: "📍 Trimite locația",     type: "✏️ Setează orașul", ask: "Pentru a primi prognoză meteo la 06:00, trimite locația sau apasă «✏️ Setează orașul»" },
   en: { share: "📍 Share location",       type: "✏️ Set city",       ask: "For 06:00 forecast, share location or tap «✏️ Set city»" }
 };
 
@@ -215,7 +218,7 @@ const MODEL_OPTIONS = [
   { id: "meta-llama/llama-3.1-70b-instruct", label: "Llama 3.1 70B (бюджет)" },
   { id: "mistralai/mistral-small", label: "Mistral Small (очень быстро/дешево)" }
 ];
-const KNOWN_CMDS = new Set(["start","help","lang","unsubscribe","setcity","weather","new","model","web"]);
+const KNOWN_CMDS = new Set(["start","help","lang ru","lang ro","lang en","unsubscribe","setcity","weather","new","model","web"]);
 
 // ── Бот ─────────────────────────────────────────────────────────────
 let bot;
