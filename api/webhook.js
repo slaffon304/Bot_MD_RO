@@ -1,14 +1,13 @@
 import { Bot, webhookCallback, InlineKeyboard } from "grammy";
 
-// ── Конфиг провайдера ───────────────────────────────────────────────
+// ── Конфиг ──────────────────────────────────────────────────────────
 const provider = (process.env.PROVIDER || "none").toLowerCase();
-const envModel = process.env.MODEL || ""; // дефолт можно задать в Vercel
+const envModel = process.env.MODEL || ""; // можно задать через переменные Vercel
 
 function defaultModel() {
-  return envModel || "gpt-4o-mini"; // дефолт для OpenRouter
+  return envModel || "gpt-4o-mini"; // дефолт для OpenRouter, умеет tools
 }
 
-// ── Вспомогательные функции ─────────────────────────────────────────
 function chunkAndReply(ctx, text) {
   const max = 3800;
   const tasks = [];
@@ -18,7 +17,7 @@ function chunkAndReply(ctx, text) {
   return tasks.reduce((p, t) => p.then(() => t), Promise.resolve());
 }
 
-// Ленивая загрузка OpenAI клиента (OpenRouter)
+// ── Ленивая загрузка SDK и стора ────────────────────────────────────
 async function getLLMClient() {
   if (provider !== "openrouter") return null;
   const apiKey = process.env.OPENROUTER_API_KEY || "";
@@ -27,15 +26,13 @@ async function getLLMClient() {
   return new OpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1" });
 }
 
-// Ленивая загрузка стора (Redis)
 async function loadStore() {
-  // ../lib относительно папки api
   const m = await import("../lib/store.js");
   return m;
 }
 
-// Tavily: поиск
-async function tavilySearch(query) {
+// ── Tavily + суммаризация ───────────────────────────────────────────
+async function tavilySearch(query, maxResults = 5) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return { ok: false, error: "NO_TAVILY_KEY" };
   const resp = await fetch("https://api.tavily.com/search", {
@@ -46,7 +43,8 @@ async function tavilySearch(query) {
       query,
       search_depth: "basic",
       include_answer: false,
-      max_results: 5
+      max_results: Math.min(Math.max(maxResults, 1), 8),
+      time_range: "d" // за последние сутки
     })
   });
   if (!resp.ok) return { ok: false, error: `HTTP_${resp.status}` };
@@ -68,13 +66,15 @@ async function summarizeWithSources(question, searchData, model) {
     {
       role: "system",
       content:
-        "Ты веб-помощник. Отвечай кратко на языке пользователя. Используй только факты из 'Источников'. " +
-        "Делай маркированные пункты. Ссылки ставь в тексте по номерам [1], [2] и добавляй список источников в конце."
+        "Ты веб‑помощник. Решай задачу кратко и по делу на языке пользователя. " +
+        "Используй только факты из 'Источников'. Делай маркированные пункты. " +
+        "Ставь ссылки в тексте по номерам [1], [2] и добавляй список источников в конце. " +
+        "Если информации мало — скажи об этом."
     },
     { role: "user", content: `Вопрос: ${question}\n\nИсточники:\n${list}\n\nВыдержки:\n${extracts}` }
   ];
 
-  const r = await (await getLLMClient()).chat.completions.create({
+  const r = await client.chat.completions.create({
     model,
     temperature: 0.2,
     max_tokens: 450,
@@ -83,12 +83,90 @@ async function summarizeWithSources(question, searchData, model) {
   return r.choices?.[0]?.message?.content || "Не удалось сформировать ответ.";
 }
 
-// ── Модели для выбора ───────────────────────────────────────────────
+// ── Модели / выбор ──────────────────────────────────────────────────
 const MODEL_OPTIONS = [
   { id: "gpt-4o-mini", label: "gpt-4o-mini (качественно/недорого)" },
   { id: "meta-llama/llama-3.1-70b-instruct", label: "Llama 3.1 70B (бюджет)" },
   { id: "mistralai/mistral-small", label: "Mistral Small (очень быстро/дешево)" }
 ];
+
+// ── Основной «чат с авто‑поиском» ───────────────────────────────────
+async function chatWithAutoSearch({ ctx, text, hist, model }) {
+  const client = await getLLMClient();
+  if (!client) throw new Error("NO_LLM");
+
+  const system = {
+    role: "system",
+    content:
+      "Ты помощник. Если для точного ответа нужны свежие факты, погода, курсы, новости и т.п., " +
+      "вызови инструмент web_search. Иначе отвечай сам."
+  };
+
+  const messages = [system, ...hist, { role: "user", content: text }];
+
+  // Описываем инструмент поиска
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description:
+          "Поиск в интернете для актуальных данных (погода, курсы валют, новости, цены и т.п.). " +
+          "Формируй запрос на языке пользователя.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Поисковый запрос" },
+            max_results: { type: "integer", description: "Сколько результатов", default: 5 }
+          },
+          required: ["query"]
+        }
+      }
+    }
+  ];
+
+  // 1-й вызов: модель решает — нужен ли web_search
+  const r1 = await client.chat.completions.create({
+    model,
+    temperature: 0.6,
+    max_tokens: 300,
+    messages,
+    tools,
+    tool_choice: "auto"
+  });
+
+  const msg1 = r1.choices?.[0]?.message;
+  const toolCalls = msg1?.tool_calls || [];
+
+  if (toolCalls.length > 0) {
+    // Берём первый вызов web_search
+    const call = toolCalls.find((c) => c.function?.name === "web_search") || toolCalls[0];
+    let args = {};
+    try {
+      args = JSON.parse(call.function?.arguments || "{}");
+    } catch (_) {}
+
+    const q = (args.query || text).toString();
+    const maxRes = Number(args.max_results || 5);
+
+    const sr = await tavilySearch(q, maxRes);
+    if (!sr.ok) {
+      if (sr.error === "NO_TAVILY_KEY") return "Для веб‑поиска добавь TAVILY_API_KEY в Vercel (Production) и сделай Redeploy.";
+      return `Поиск не удался (${sr.error}). Попробуй позже.`;
+    }
+
+    // Делаем финальную суммаризацию с источниками
+    const answer = await summarizeWithSources(q, sr.data, model);
+    return answer;
+  }
+
+  // Если инструмент не вызывался — берём текст ответа напрямую
+  const plain = msg1?.content?.trim();
+  if (plain) return plain;
+
+  // Подстраховка
+  return "Не удалось получить ответ. Попробуй переформулировать запрос.";
+}
 
 // ── Инициализация бота ──────────────────────────────────────────────
 let bot;
@@ -100,19 +178,21 @@ function getBot() {
   const b = new Bot(token);
 
   b.command("start", async (ctx) => {
-    await ctx.reply("Привет! Я на Vercel.\n/new — очистить контекст\n/model — выбрать модель\n/web вопрос — поиск в сети");
+    await ctx.reply("Привет! Я на Vercel.\nКоманды:\n/new — очистить контекст\n/model — выбрать модель\n/web вопрос — ручной поиск в сети");
   });
 
   b.command("help", async (ctx) => {
-    await ctx.reply("Доступно: память контекста, /new, /model, /web. Провайдер: OpenRouter.");
+    await ctx.reply("Доступно: память контекста, /new, /model, /web и авто‑поиск при необходимости (на gpt‑4o‑mini).");
   });
 
+  // Очистка контекста
   b.command("new", async (ctx) => {
     const { clearHistory } = await loadStore();
     await clearHistory(ctx.chat.id);
     await ctx.reply("Окей, начинаем новый диалог. Что дальше?");
   });
 
+  // Выбор модели
   b.command("model", async (ctx) => {
     const kb = new InlineKeyboard();
     for (const m of MODEL_OPTIONS) kb.text(m.label, `m:${m.id}`).row();
@@ -133,6 +213,7 @@ function getBot() {
     try { await ctx.editMessageText(`Текущая модель: ${found.label}`); } catch (_) {}
   });
 
+  // Ручной веб‑поиск
   b.command("web", async (ctx) => {
     const { pushMessage, getUserModel } = await loadStore();
     const text = ctx.message.text || "";
@@ -149,13 +230,14 @@ function getBot() {
       return;
     }
 
+    const { getUserModel } = await loadStore();
     const userModel = await getUserModel(ctx.from.id);
     const model = userModel || defaultModel();
 
     const sr = await tavilySearch(q);
     if (!sr.ok) {
       if (sr.error === "NO_TAVILY_KEY") {
-        await ctx.reply("Для веб-поиска добавь TAVILY_API_KEY в Vercel (Production) и сделай Redeploy.");
+        await ctx.reply("Для веб‑поиска добавь TAVILY_API_KEY в Vercel (Production) и сделай Redeploy.");
       } else {
         await ctx.reply(`Поиск не удался (${sr.error}). Попробуй позже.`);
       }
@@ -165,6 +247,7 @@ function getBot() {
     try {
       const answer = await summarizeWithSources(q, sr.data, model);
       await chunkAndReply(ctx, answer);
+      const { pushMessage } = await loadStore();
       await pushMessage(ctx.chat.id, { role: "user", content: `/web ${q}` });
       await pushMessage(ctx.chat.id, { role: "assistant", content: answer });
     } catch (e) {
@@ -173,6 +256,7 @@ function getBot() {
     }
   });
 
+  // Обычный чат с памятью + авто‑поиск через tools
   b.on("message:text", async (ctx) => {
     const { getHistory, pushMessage, getUserModel } = await loadStore();
     const text = ctx.message.text?.trim() || "";
@@ -190,23 +274,14 @@ function getBot() {
     const userModel = await getUserModel(ctx.from.id);
     const model = userModel || defaultModel();
 
-    const system = { role: "system", content: "Ты краткий и полезный ассистент. Отвечай на языке пользователя." };
-    const messages = [system, ...hist, { role: "user", content: text }];
-
     try {
-      const r = await client.chat.completions.create({
-        model,
-        temperature: 0.6,
-        max_tokens: 400,
-        messages
-      });
-      const answer = r.choices?.[0]?.message?.content || "Нет ответа от модели.";
+      const answer = await chatWithAutoSearch({ ctx, text, hist, model });
       await pushMessage(ctx.chat.id, { role: "user", content: text });
       await pushMessage(ctx.chat.id, { role: "assistant", content: answer });
       await chunkAndReply(ctx, answer);
     } catch (e) {
-      console.error("LLM error:", e);
-      await ctx.reply("Ошибка при запросе к модели. Проверь ключ/модель.");
+      console.error("LLM/chat error:", e);
+      await ctx.reply("Ошибка при обработке запроса. Попробуй ещё раз.");
     }
   });
 
@@ -226,4 +301,4 @@ export default async function handler(req, res) {
     console.error("Webhook error:", e);
     res.status(200).end();
   }
-            }
+}
