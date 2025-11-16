@@ -3,9 +3,14 @@ import { Bot, webhookCallback, InlineKeyboard } from "grammy";
 // ── Конфиг ──────────────────────────────────────────────────────────
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || ""; // можно задать через переменные Vercel
+const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
 
 function defaultModel() {
   return envModel || "gpt-4o-mini"; // дефолт для OpenRouter, умеет tools
+}
+
+function systemPrompt() {
+  return "Ты краткий и полезный ассистент. Отвечай на языке пользователя.";
 }
 
 function chunkAndReply(ctx, text) {
@@ -25,13 +30,12 @@ async function getLLMClient() {
   const OpenAI = (await import("openai")).default;
   return new OpenAI({ apiKey, baseURL: "https://openrouter.ai/api/v1" });
 }
-
 async function loadStore() {
   const m = await import("../lib/store.js");
   return m;
 }
 
-// ── Tavily + суммаризация ───────────────────────────────────────────
+// ── Веб‑поиск (Tavily) и суммаризация ───────────────────────────────
 async function tavilySearch(query, maxResults = 5) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return { ok: false, error: "NO_TAVILY_KEY" };
@@ -43,8 +47,8 @@ async function tavilySearch(query, maxResults = 5) {
       query,
       search_depth: "basic",
       include_answer: false,
-      max_results: Math.min(Math.max(maxResults, 1), 8),
-      time_range: "d" // за последние сутки
+      time_range: "d", // последние сутки
+      max_results: Math.min(Math.max(maxResults, 1), 8)
     })
   });
   if (!resp.ok) return { ok: false, error: `HTTP_${resp.status}` };
@@ -55,7 +59,6 @@ async function tavilySearch(query, maxResults = 5) {
 async function summarizeWithSources(question, searchData, model) {
   const client = await getLLMClient();
   if (!client) throw new Error("NO_LLM");
-
   const sources = (searchData?.results || []).slice(0, 5);
   if (!sources.length) return "Ничего не нашёл по запросу. Попробуй переформулировать.";
 
@@ -66,10 +69,8 @@ async function summarizeWithSources(question, searchData, model) {
     {
       role: "system",
       content:
-        "Ты веб‑помощник. Решай задачу кратко и по делу на языке пользователя. " +
-        "Используй только факты из 'Источников'. Делай маркированные пункты. " +
-        "Ставь ссылки в тексте по номерам [1], [2] и добавляй список источников в конце. " +
-        "Если информации мало — скажи об этом."
+        "Ты веб‑помощник. Если вопрос требует свежих фактов, используй только данные из 'Источников'. " +
+        "Делай маркированные пункты. Ссылки ставь в тексте по номерам [1], [2], а в конце — список источников."
     },
     { role: "user", content: `Вопрос: ${question}\n\nИсточники:\n${list}\n\nВыдержки:\n${extracts}` }
   ];
@@ -83,28 +84,27 @@ async function summarizeWithSources(question, searchData, model) {
   return r.choices?.[0]?.message?.content || "Не удалось сформировать ответ.";
 }
 
-// ── Модели / выбор ──────────────────────────────────────────────────
-const MODEL_OPTIONS = [
-  { id: "gpt-4o-mini", label: "gpt-4o-mini (качественно/недорого)" },
-  { id: "meta-llama/llama-3.1-70b-instruct", label: "Llama 3.1 70B (бюджет)" },
-  { id: "mistralai/mistral-small", label: "Mistral Small (очень быстро/дешево)" }
-];
+// ── Вспомогательные определения моделей ─────────────────────────────
+function isToolCapableModel(model) {
+  return /gpt-4o/i.test(model);
+}
+function isOpenModelNeedingWeb(model) {
+  return /(meta-llama|llama|mistral)/i.test(model);
+}
 
-// ── Основной «чат с авто‑поиском» ───────────────────────────────────
-async function chatWithAutoSearch({ ctx, text, hist, model }) {
+// ── Чат с авто‑поиском через tools (для gpt‑4o‑mini) ────────────────
+async function chatWithAutoSearch({ text, hist, model }) {
   const client = await getLLMClient();
   if (!client) throw new Error("NO_LLM");
 
   const system = {
     role: "system",
     content:
-      "Ты помощник. Если для точного ответа нужны свежие факты, погода, курсы, новости и т.п., " +
+      "Ты помощник. Если для точного ответа нужны свежие факты (погода, курсы, новости и т.п.), " +
       "вызови инструмент web_search. Иначе отвечай сам."
   };
-
   const messages = [system, ...hist, { role: "user", content: text }];
 
-  // Описываем инструмент поиска
   const tools = [
     {
       type: "function",
@@ -116,8 +116,8 @@ async function chatWithAutoSearch({ ctx, text, hist, model }) {
         parameters: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Поисковый запрос" },
-            max_results: { type: "integer", description: "Сколько результатов", default: 5 }
+            query: { type: "string" },
+            max_results: { type: "integer", default: 5 }
           },
           required: ["query"]
         }
@@ -125,7 +125,6 @@ async function chatWithAutoSearch({ ctx, text, hist, model }) {
     }
   ];
 
-  // 1-й вызов: модель решает — нужен ли web_search
   const r1 = await client.chat.completions.create({
     model,
     temperature: 0.6,
@@ -139,13 +138,9 @@ async function chatWithAutoSearch({ ctx, text, hist, model }) {
   const toolCalls = msg1?.tool_calls || [];
 
   if (toolCalls.length > 0) {
-    // Берём первый вызов web_search
     const call = toolCalls.find((c) => c.function?.name === "web_search") || toolCalls[0];
     let args = {};
-    try {
-      args = JSON.parse(call.function?.arguments || "{}");
-    } catch (_) {}
-
+    try { args = JSON.parse(call.function?.arguments || "{}"); } catch {}
     const q = (args.query || text).toString();
     const maxRes = Number(args.max_results || 5);
 
@@ -154,19 +149,34 @@ async function chatWithAutoSearch({ ctx, text, hist, model }) {
       if (sr.error === "NO_TAVILY_KEY") return "Для веб‑поиска добавь TAVILY_API_KEY в Vercel (Production) и сделай Redeploy.";
       return `Поиск не удался (${sr.error}). Попробуй позже.`;
     }
-
-    // Делаем финальную суммаризацию с источниками
-    const answer = await summarizeWithSources(q, sr.data, model);
-    return answer;
+    return await summarizeWithSources(q, sr.data, model);
   }
 
-  // Если инструмент не вызывался — берём текст ответа напрямую
   const plain = msg1?.content?.trim();
   if (plain) return plain;
-
-  // Подстраховка
   return "Не удалось получить ответ. Попробуй переформулировать запрос.";
 }
+
+// ── Простой чат без tools ───────────────────────────────────────────
+async function plainChat({ text, hist, model }) {
+  const client = await getLLMClient();
+  if (!client) throw new Error("NO_LLM");
+  const messages = [{ role: "system", content: systemPrompt() }, ...hist, { role: "user", content: text }];
+  const r = await client.chat.completions.create({
+    model,
+    temperature: 0.6,
+    max_tokens: 400,
+    messages
+  });
+  return r.choices?.[0]?.message?.content || "Нет ответа от модели.";
+}
+
+// ── Модели на выбор (/model) ────────────────────────────────────────
+const MODEL_OPTIONS = [
+  { id: "gpt-4o-mini", label: "gpt-4o-mini (качественно/недорого)" },
+  { id: "meta-llama/llama-3.1-70b-instruct", label: "Llama 3.1 70B (бюджет)" },
+  { id: "mistralai/mistral-small", label: "Mistral Small (очень быстро/дешево)" }
+];
 
 // ── Инициализация бота ──────────────────────────────────────────────
 let bot;
@@ -182,7 +192,7 @@ function getBot() {
   });
 
   b.command("help", async (ctx) => {
-    await ctx.reply("Доступно: память контекста, /new, /model, /web и авто‑поиск при необходимости (на gpt‑4o‑mini).");
+    await ctx.reply("Доступно: память, /new, /model, /web. Авто‑поиск: на gpt‑4o‑mini — tools; на Llama/Mistral — принудительный веб‑поиск.");
   });
 
   // Очистка контекста
@@ -210,7 +220,7 @@ function getBot() {
     }
     await setUserModel(ctx.from.id, found.id);
     await ctx.answerCallbackQuery({ text: `Модель: ${found.label}` });
-    try { await ctx.editMessageText(`Текущая модель: ${found.label}`); } catch (_) {}
+    try { await ctx.editMessageText(`Текущая модель: ${found.label}`); } catch {}
   });
 
   // Ручной веб‑поиск
@@ -230,7 +240,6 @@ function getBot() {
       return;
     }
 
-    const { getUserModel } = await loadStore();
     const userModel = await getUserModel(ctx.from.id);
     const model = userModel || defaultModel();
 
@@ -247,7 +256,6 @@ function getBot() {
     try {
       const answer = await summarizeWithSources(q, sr.data, model);
       await chunkAndReply(ctx, answer);
-      const { pushMessage } = await loadStore();
       await pushMessage(ctx.chat.id, { role: "user", content: `/web ${q}` });
       await pushMessage(ctx.chat.id, { role: "assistant", content: answer });
     } catch (e) {
@@ -256,7 +264,7 @@ function getBot() {
     }
   });
 
-  // Обычный чат с памятью + авто‑поиск через tools
+  // Обычный чат: tools для gpt‑4o‑mini, принудительный веб‑поиск для Llama/Mistral
   b.on("message:text", async (ctx) => {
     const { getHistory, pushMessage, getUserModel } = await loadStore();
     const text = ctx.message.text?.trim() || "";
@@ -275,30 +283,4 @@ function getBot() {
     const model = userModel || defaultModel();
 
     try {
-      const answer = await chatWithAutoSearch({ ctx, text, hist, model });
-      await pushMessage(ctx.chat.id, { role: "user", content: text });
-      await pushMessage(ctx.chat.id, { role: "assistant", content: answer });
-      await chunkAndReply(ctx, answer);
-    } catch (e) {
-      console.error("LLM/chat error:", e);
-      await ctx.reply("Ошибка при обработке запроса. Попробуй ещё раз.");
-    }
-  });
-
-  bot = b;
-  return bot;
-}
-
-// ── HTTP‑обработчик ─────────────────────────────────────────────────
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(200).send("OK");
-  const b = getBot();
-  if (!b) return res.status(200).send("NO_TOKEN");
-  const handle = webhookCallback(b, "http");
-  try {
-    await handle(req, res);
-  } catch (e) {
-    console.error("Webhook error:", e);
-    res.status(200).end();
-  }
-}
+      let answer;
