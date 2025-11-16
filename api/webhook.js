@@ -327,7 +327,8 @@ function getBot() {
     if (!q) { await ctx.reply(lang==="ro"?"Scrie: /web întrebarea":"Type: /web your query"); return; }
     await ctx.api.sendChatAction(ctx.chat.id, "typing");
     const userModel = await getUserModel(ctx.from.id); const model = userModel || defaultModel();
-    const sr = await tavilySearch(q);
+    const { timeframe, corrected } = normalizeTimeAndQuery(q, lang);
+    const sr = await tavilySearch(corrected);
     if (!sr.ok) { await ctx.reply(sr.error==="NO_TAVILY_KEY" ? "Add TAVILY_API_KEY in Vercel" : `Search failed (${sr.error}).`); return; }
     const ans = await summarizeWithSources({ question:q, searchData:sr.data, model, lang });
     await chunkAndReply(ctx, ans);
