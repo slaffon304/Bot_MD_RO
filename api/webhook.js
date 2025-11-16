@@ -9,8 +9,8 @@ import {
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
-const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));   // 2 по умолчанию
-const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // 220 по умолчанию
+const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // по умолчанию 2 источника
+const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // по умолчанию 220 символов выдержки
 
 function defaultModel() { return envModel || "gpt-4o-mini"; }
 function isToolCapableModel(m){ return /gpt-4o/i.test(m); }
@@ -36,24 +36,48 @@ function detectLangFromTG(code) {
   const s = (code || "").toLowerCase().split("-")[0];
   return ["ru","ro","en"].includes(s) ? s : "en";
 }
+
+// балльный авто‑детектор по тексту (устойчив к опечаткам)
 function detectLangFromText(text) {
   if (!text) return null;
-  const hasCyr = /[\u0400-\u04FF]/.test(text);
-  if (hasCyr) return "ru";
-  const hasRoDiacritics = /[ăâîșțĂÂÎȘȚ]/.test(text);
-  const t = text.toLowerCase();
-  const roHints = ["este","sunt","mâine","maine","mîine","azi","astăzi","astazi","vreme","vremea","oraș","salut","bună","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți"];
-  const enHints = ["is","are","tomorrow","tommorow","tomorow","tmrw","today","weather","forecast","city","hello","hi"];
-  if (hasRoDiacritics || roHints.some(w => t.includes(w))) return "ro";
-  if (enHints.some(w => t.includes(w))) return "en";
-  return null;
+  const lower = text.toLowerCase();
+
+  // подсказки (включая частые опечатки)
+  const roWords = ["este","sunt","mâine","maine","mîine","azi","astăzi","astazi","vreme","vremea","oraș","bună","salut","prognoză","meteo","moldova","românia","chișinău","bucurești","bălți","balti"];
+  const enWords = ["weather","wheather","forecast","tomorrow","tommorow","tomorow","tommorrow","today","hello","hi","city","ny","nyc","new york","what","how"];
+
+  const roDiacritics = (text.match(/[ăâîșțĂÂÎȘȚ]/g) || []).length;
+  const enAsciiLetters = (text.match(/[a-z]/gi) || []).length; // латиница в целом
+
+  // считаем «очки»
+  let roScore = roDiacritics;
+  let enScore = 0;
+
+  // по словам-подсказкам
+  for (const w of roWords) if (lower.includes(w)) roScore += 2;
+  for (const w of enWords) if (lower.includes(w)) enScore += 2;
+
+  // если латиницы много, чуть добавим EN
+  if (enAsciiLetters > 0) enScore += 1;
+
+  // если оба обнаружены — решаем по бóльшему счёту;
+  // при равенстве: если диакритик мало (<=1) и есть EN‑подсказки — выбираем EN
+  if (enScore > roScore) return "en";
+  if (roScore > enScore) return "ro";
+  if (enScore === roScore) {
+    if (roDiacritics <= 1 && enWords.some(w => lower.includes(w))) return "en";
+    if (roWords.some(w => lower.includes(w))) return "ro";
+  }
+  return null; // не уверены — пусть решит другой слой
 }
+
 async function resolveLang(ctx, text) {
   const userId = ctx.from.id;
   const saved = await getUserLang(userId);
   const manual = await isLangManual(userId);
   const tg = detectLangFromTG(ctx.from?.language_code);
   const fromText = detectLangFromText(text);
+
   if (manual) return saved || tg || "en";
   if (fromText && fromText !== saved) { await setUserLang(userId, fromText); return fromText; }
   if (saved) return saved;
@@ -99,11 +123,10 @@ const langKB = new InlineKeyboard().text("RU","lang:ru").text("RO","lang:ro").te
 async function tavilySearch(query, maxResults) {
   const key = process.env.TAVILY_API_KEY || "";
   if (!key) return { ok:false, error:"NO_TAVILY_KEY" };
-  const wanted = Math.min(Math.max(maxResults || SOURCE_LIMIT, 1), SOURCE_LIMIT + 1); // чуть больше лимита на входе
+  const wanted = Math.min(Math.max(maxResults || SOURCE_LIMIT, 1), SOURCE_LIMIT + 1);
   const resp = await fetch("https://api.tavily.com/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // неделя — чтобы захватывать tomorrow/next day и свежие новости
     body: JSON.stringify({ api_key:key, query, search_depth:"basic", include_answer:false, time_range:"w", max_results:wanted })
   });
   if (!resp.ok) return { ok:false, error:`HTTP_${resp.status}` };
@@ -111,7 +134,7 @@ async function tavilySearch(query, maxResults) {
   return { ok:true, data };
 }
 
-// ── Нормализация опечаток (mîne→mâine/tomorow→tomorrow) ────────────
+// ── Нормализация «сегодня/завтра» + опечаток ────────────────────────
 function rmDiacriticsRo(s) {
   return (s || "")
     .normalize("NFD")
@@ -170,16 +193,15 @@ function normalizeTimeAndQuery(text, lang) {
   return { timeframe, corrected: q.trim() };
 }
 
-// ── Суммаризация (с лимитом источников и короткими выдержками) ─────
+// ── Суммаризация (лимит источников + короткие выдержки) ────────────
 function summarizeSystem(lang){
-  const common = `Citează cel mult ${SOURCE_LIMIT} surse. Respectă timeframe (azi/today vs mâine/tomorrow). Folosește doar fapte din Surse. Liste + referințe [1], [2]; la final — lista surselor.`;
+  const common = `Citează cel mult ${SOURCE_LIMIT} surse. Respectă timeframe (azi/today vs mâine/tomorrow). Doar fapte din Surse. Liste + referințe [1], [2]; la final — sursele.`;
   if (lang==="ro") return "Ești un asistent web. Răspunde pe scurt în română. " + common;
   if (lang==="en") return `You are a web assistant. Answer briefly in English. Cite at most ${SOURCE_LIMIT} sources. Respect the timeframe. Use only facts from Sources. Bullets + refs [1], [2]; add sources list at the end.`;
-  return `Ты веб‑ассистент. Отвечай кратко по‑русски. Укажи не более ${SOURCE_LIMIT} источников. Соблюдай «сегодня/завтра». Только факты из Источников. Маркеры + ссылки [1], [2]; в конце — список источников.`;
+  return `Ты веб‑ассистент. Отвечай кратко по‑русски. Не более ${SOURCE_LIMIT} источников. Соблюдай «сегодня/завтра». Только факты из Источников. Маркеры + [1], [2]; в конце — ссылки.`;
 }
 function dedupeAndPick(results) {
-  const picked = [];
-  const seen = new Set();
+  const picked = [], seen = new Set();
   for (const r of results || []) {
     try {
       const host = new URL(r.url).hostname.replace(/^www\./,"");
@@ -187,9 +209,7 @@ function dedupeAndPick(results) {
       seen.add(host);
       picked.push(r);
       if (picked.length >= SOURCE_LIMIT) break;
-    } catch {
-      // если URL кривой — пропускаем
-    }
+    } catch {}
   }
   return picked;
 }
@@ -333,7 +353,7 @@ function getBot() {
     try { await ctx.editMessageText(`Current model: ${found.label}`); } catch {}
   });
 
-  // /web — ручной поиск (с нормализацией опечаток)
+  // /web — ручной поиск (с нормализацией «today/tomorrow» и опечаток)
   b.command("web", async (ctx) => {
     const text = ctx.message.text || "";
     const q = text.replace(/^\/web(@\S+)?\s*/i, "").trim();
@@ -391,4 +411,4 @@ export default async function handler(req, res) {
   const b = getBot(); if (!b) return res.status(200).send("NO_TOKEN");
   const handle = webhookCallback(b, "http");
   try { await handle(req, res); } catch { res.status(200).end(); }
-}
+                          }
