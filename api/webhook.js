@@ -9,8 +9,8 @@ import {
 const provider = (process.env.PROVIDER || "none").toLowerCase();
 const envModel = process.env.MODEL || "";
 const FORCE_WEB_FOR_OPEN = (process.env.FORCE_WEB_FOR_OPEN ?? "1") !== "0";
-const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));      // лимит источников
-const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220)); // длина выдержек
+const SOURCE_LIMIT = Math.max(1, Number(process.env.SOURCE_LIMIT || 2));
+const EXTRACT_CHARS = Math.max(60, Number(process.env.EXTRACT_CHARS || 220));
 const PREMIUM_ALL = process.env.PREMIUM_ALL === "1"; // открыть все pro‑модели для теста
 
 function defaultModel() { return envModel || "gpt-4o-mini"; }
@@ -61,7 +61,7 @@ function detectLangFromTG(code) {
   const s = (code || "").toLowerCase().split("-")[0];
   return ["ru","ro","en"].includes(s) ? s : "en";
 }
-// устойчивый авто‑детектор (считает “очки” для RO/EN; кириллица → RU сразу)
+// устойчивый авто‑детектор (кириллица → RU, очки для RO/EN)
 function detectLangFromText(text) {
   if (!text) return null;
   if (/[А-Яа-яЁё\u0400-\u04FF]/.test(text)) return "ru";
@@ -156,6 +156,35 @@ function normalizeTimeAndQuery(text, lang) {
   return { timeframe, corrected: q.trim() };
 }
 
+/* ==================== Chat request with fallback ==================== */
+async function chatRequest(model, messages, opts = {}) {
+  const client = await getLLMClient();
+  if (!client) throw new Error("NO_LLM");
+  const body = {
+    model,
+    messages,
+    temperature: opts.temperature ?? 0.6,
+    max_tokens: opts.max_tokens ?? 400,
+  };
+  try {
+    const r = await client.chat.completions.create(body);
+    return r.choices?.[0]?.message?.content || "";
+  } catch (e) {
+    console.error("chatRequest error for model:", model, e?.message || e);
+    const def = defaultModel();
+    if (model !== def) {
+      try {
+        const r2 = await client.chat.completions.create({ ...body, model: def });
+        return r2.choices?.[0]?.message?.content || "";
+      } catch (e2) {
+        console.error("fallback error:", e2?.message || e2);
+        throw e2;
+      }
+    }
+    throw e;
+  }
+}
+
 /* ==================== Summarize with sources ==================== */
 function summarizeSystem(lang){
   const common = `Citează/Quote ≤ ${SOURCE_LIMIT} surse. Respectă/Respect timeframe (azi/today vs mâine/tomorrow). Doar fapte din Surse. Bullets + [1],[2]; la final — sursele.`;
@@ -178,32 +207,23 @@ function dedupeAndPick(results) {
 }
 function shortText(s) { return String(s || "").replace(/\s+/g," ").trim().slice(0, EXTRACT_CHARS); }
 async function summarizeWithSources({ question, searchData, model, lang }) {
-  const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
   const selected = dedupeAndPick(searchData?.results || []);
   if (!selected.length) return lang==="ro" ? "Nu am găsit rezultate." : lang==="en" ? "No results found." : "Ничего не найдено.";
   const list = selected.map((s,i)=>`${i+1}. ${s.title||s.url} — ${s.url}`).join("\n");
   const extracts = selected.map((s,i)=>`[${i+1}] ${shortText(s.content)}`).join("\n\n");
-  const r = await client.chat.completions.create({
-    model, temperature:0.2, max_tokens:450,
-    messages:[
-      { role:"system", content: summarizeSystem(lang) },
-      { role:"user", content:`Question: ${question}\n\nSources:\n${list}\n\nExtracts:\n${extracts}` }
-    ]
-  });
-  return r.choices?.[0]?.message?.content || (lang==="ro"?"Nu am putut genera răspuns.":"Couldn't generate an answer.");
+  return await chatRequest(model, [
+    { role:"system", content: summarizeSystem(lang) },
+    { role:"user", content:`Question: ${question}\n\nSources:\n${list}\n\nExtracts:\n${extracts}` }
+  ], { temperature:0.2, max_tokens:450 });
 }
 
 /* ==================== Chat modes ==================== */
 async function plainChat({ text, hist, model, lang }) {
-  const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
-  const r = await client.chat.completions.create({
-    model, temperature:0.6, max_tokens:400,
-    messages:[ { role:"system", content: sysPrompt(lang) }, ...hist, { role:"user", content:text } ]
-  });
-  return r.choices?.[0]?.message?.content || (lang==="ro"?"Niciun răspuns.":"No answer.");
+  return await chatRequest(model, [{ role:"system", content: sysPrompt(lang) }, ...hist, { role:"user", content:text }], { temperature:0.6, max_tokens:400 });
 }
 async function chatWithAutoSearch({ text, hist, model, lang }) {
-  const client = await getLLMClient(); if (!client) throw new Error("NO_LLM");
+  const client = await getLLMClient();
+  if (!client) throw new Error("NO_LLM");
   const tools = [{
     type:"function",
     function:{ name:"web_search", description:"Search the web for fresh data",
@@ -278,8 +298,7 @@ const MODEL_OPTIONS = [
   { id:"meta-llama/llama-3.1-70b-instruct", label:"Llama 3.1 70B (budget)" },
   { id:"mistralai/mistral-small", label:"Mistral Small (fast/cheap)" }
 ];
-const KNOWN_CMDS = new Set(["start","help","lang","new","model","web","i","gpt"]);
-
+const KNOWN_CMDS = new Set(["start","help","lang","new","model","web","i","gpt","mymodel"]);
 /* ==================== BOT ==================== */
 let bot;
 function getBot() {
@@ -338,6 +357,12 @@ function getBot() {
   b.command("new", async (ctx) => {
     await clearHistory(ctx.chat.id);
     await ctx.reply("OK. New chat.");
+  });
+
+  // /mymodel — показать активную модель
+  b.command("mymodel", async (ctx) => {
+    const current = (await getUserModel(ctx.from.id)) || MODEL_MEM.get(ctx.from.id) || defaultModel();
+    await ctx.reply(`Current model: ${current}`);
   });
 
   // /model (простое меню)
@@ -427,7 +452,8 @@ function getBot() {
       await pushMessage(ctx.chat.id, { role:"user", content:text });
       await pushMessage(ctx.chat.id, { role:"assistant", content:answer });
       await chunkAndReply(ctx, answer);
-    } catch {
+    } catch (e) {
+      console.error("message handler error:", e?.message || e);
       await ctx.reply(lang==="ro"?"Eroare la procesare. Încearcă din nou.":"Error processing. Try again.");
     }
   });
@@ -441,5 +467,5 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(200).send("OK");
   const b = getBot(); if (!b) return res.status(200).send("NO_TOKEN");
   const handle = webhookCallback(b, "http");
-  try { await handle(req, res); } catch { res.status(200).end(); }
-}
+  try { await handle(req, res); } catch (e) { console.error("webhook error:", e?.message || e); res.status(200).end(); }
+                                                                                        }
