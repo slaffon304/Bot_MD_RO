@@ -1,11 +1,11 @@
 /**
  * Webhook handler
- * FIX: Кнопки теперь отображаются (убран лишний .reply_markup)
+ * FIX: Полная совместимость с require и новым store.js
  */
 
 const { Telegraf, Markup } = require('telegraf');
 const content = require('../content.json');
-const store = require('../lib/store');
+const store = require('../lib/store'); // Подключаем исправленный store
 const { gptKeyboard } = require('../lib/models');
 
 const {
@@ -28,22 +28,29 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// --- УСТАНОВКА ЯЗЫКА ---
+// --- УСТАНОВКА ЯЗЫКА (ИСПРАВЛЕНО) ---
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
   try {
-    if (store.updateUser) await store.updateUser(userId, { language: langCode });
-    const currentModel = await store.getUserModel(userId);
-    if (!currentModel) await store.setUserModel(userId, 'gpt5mini');
-  } catch (e) {}
+    // ИСПРАВЛЕНО: Используем setUserLang вместо несуществующего updateUser
+    if (store.setUserLang) await store.setUserLang(userId, langCode);
+    
+    // Проверяем модель, если нет - ставим дефолт
+    let currentModel = null;
+    if (store.getUserModel) currentModel = await store.getUserModel(userId);
+    
+    if (!currentModel && store.setUserModel) {
+        await store.setUserModel(userId, 'gpt5mini');
+    }
+  } catch (e) {
+      console.error("Setup Lang DB Error:", e);
+  }
 
   const welcomeText = content.welcome[langCode] || content.welcome.en;
   
   try { await ctx.deleteMessage().catch(() => {}); } catch (e) {}
 
-  // Шлем приветствие с кнопками
-  // Язык зашиваем в кнопку: menu_gpt_ru
   await ctx.reply(welcomeText, {
     reply_markup: {
         inline_keyboard: [
@@ -92,20 +99,21 @@ bot.on('callback_query', async (ctx) => {
     if (data.startsWith('menu_gpt')) {
       const lang = data.split('_')[2] || 'ru'; 
       
-      // Получаем модель
+      // Получаем модель (ИСПРАВЛЕНО)
       let currentModel = 'gpt5mini';
       try {
-          const m = await store.getUserModel(userId);
-          if (m) currentModel = m;
+          if (store.getUserModel) {
+            const m = await store.getUserModel(userId);
+            if (m) currentModel = m;
+          }
       } catch (e) {}
 
       const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
       const keyboard = gptKeyboard(lang, currentModel, () => false);
 
-      // FIX: Здесь была ошибка. keyboard уже содержит структуру, .reply_markup не нужен
       await ctx.editMessageText(menuText, {
         parse_mode: 'Markdown', 
-        reply_markup: keyboard // <--- ИСПРАВЛЕНО
+        reply_markup: keyboard 
       });
       
       await ctx.answerCbQuery();
@@ -114,11 +122,13 @@ bot.on('callback_query', async (ctx) => {
 
     // 2. Выбор модели
     if (data.startsWith('model_')) {
-      // Пытаемся угадать язык из стора
+      // ИСПРАВЛЕНО: Получаем язык через getUserLang, а не getUser
       let userLang = 'ru';
       try {
-          const u = await store.getUser(userId);
-          if(u && u.language) userLang = u.language;
+          if (store.getUserLang) {
+            const l = await store.getUserLang(userId);
+            if (l) userLang = l;
+          }
       } catch(e) {}
 
       await handleModelCallback(ctx, userLang); 
@@ -136,7 +146,6 @@ bot.on('callback_query', async (ctx) => {
 
   } catch (error) {
     console.error('Callback Error:', error);
-    // Если сообщение слишком старое, шлем новое
     if (error.description && error.description.includes('message to edit not found')) {
        await ctx.reply('Session expired. /menu');
     }
@@ -156,6 +165,7 @@ bot.on('text', async (ctx) => {
 
 bot.catch((err) => console.error('Global Error:', err));
 
+// Экспорт для Vercel
 module.exports = async (req, res) => {
   try {
     if (req.method === 'POST') {
@@ -165,7 +175,7 @@ module.exports = async (req, res) => {
       res.status(200).json({ status: 'Running' });
     }
   } catch (error) {
+    console.error("Webhook Error:", error);
     res.status(500).json({ error: 'Error' });
   }
 };
-                                   
