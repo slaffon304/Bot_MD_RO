@@ -10,7 +10,7 @@ const {
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
 
 const MODEL_CHANGE_MSG = {
-  ru: "Выбранная модель настроена на обычный стиль общения и креативность (теплота, пояснение для тебя, не включай в сообщение) по умолчанию. Настроить другие параметры можно в /settingsbot.",
+  ru: "Выбранная модель настроена на обычный стиль общения и креативность по умолчанию. Настроить другие параметры можно в /settingsbot.",
   ro: "Modelul selectat este setat la stil normal de comunicare și creativitate implicită. Poți configura alți parametri în /settingsbot.",
   en: "The selected model is set to normal communication style and creativity by default. You can configure other parameters in /settingsbot."
 };
