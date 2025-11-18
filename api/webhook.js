@@ -1,15 +1,13 @@
 /**
  * Webhook handler для Telegram бота
- * FIX: Замена editMessageText на delete+reply для стабильности
+ * FIX: Исправлено отображение кнопок моделей (reply_markup)
  */
 
 const { Telegraf, Markup } = require('telegraf');
 const content = require('../content.json');
 const store = require('../lib/store');
-// ВАЖНО: Импорт моделей всегда наверху
 const { gptKeyboard } = require('../lib/models');
 
-// Импортируем handlers
 const {
   handleTextMessage,
   handleClearCommand,
@@ -17,12 +15,9 @@ const {
   handleModelCallback,
 } = require('./handlers/text');
 
-// Инициализация бота
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-/**
- * Команда /start - Выбор языка
- */
+// --- START ---
 bot.command('start', async (ctx) => {
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
     [
@@ -33,63 +28,54 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// Функция установки языка (ИСПРАВЛЕНА ЛОГИКА)
+// --- ЛОГИКА ЯЗЫКА ---
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
   try {
-    // Сохраняем язык
-    if (store.updateUser) {
-        await store.updateUser(userId, { language: langCode });
-    }
-    // Устанавливаем дефолтную модель
+    if (store.updateUser) await store.updateUser(userId, { language: langCode });
     const currentModel = await store.getUserModel(userId);
-    if (!currentModel) {
-      await store.setUserModel(userId, 'gpt5mini');
-    }
+    if (!currentModel) await store.setUserModel(userId, 'gpt5mini');
   } catch (e) {
-    console.error('Error saving user data:', e);
+    console.error('Store error:', e);
   }
 
   const welcomeText = content.welcome[langCode] || content.welcome.en;
   
-  // FIX: Удаляем меню выбора языка и отправляем новое чистое сообщение
-  // Это предотвращает ошибку "message to edit not found"
   try {
     await ctx.deleteMessage().catch(() => {}); 
-  } catch (e) { 
-    console.log('Message already deleted'); 
-  }
+  } catch (e) {}
 
-  await ctx.reply(welcomeText, {
-    parse_mode: 'Markdown',
-    reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
-            { text: '🎨 AI Design', callback_data: 'menu_design' },
-          ],
-          [
-            { text: '🎵 AI Audio', callback_data: 'menu_audio' },
-            { text: '🎬 AI Video', callback_data: 'menu_video' },
-          ],
-          [
-            { text: '⚙️ Settings', callback_data: 'menu_settings' },
-            { text: '❓ Help', callback_data: 'menu_help' },
-          ],
-        ],
-      }
-  });
+  try {
+      await ctx.reply(welcomeText, {
+        reply_markup: {
+            inline_keyboard: [
+              [
+                { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
+                { text: '🎨 AI Design', callback_data: 'menu_design' },
+              ],
+              [
+                { text: '🎵 AI Audio', callback_data: 'menu_audio' },
+                { text: '🎬 AI Video', callback_data: 'menu_video' },
+              ],
+              [
+                { text: '⚙️ Settings', callback_data: 'menu_settings' },
+                { text: '❓ Help', callback_data: 'menu_help' },
+              ],
+            ],
+          }
+      });
+  } catch (err) {
+      console.error('Reply Error:', err);
+      await ctx.reply('❌ Error loading menu. Type /menu');
+  }
 };
 
-// Обработчики кнопок языка
 bot.action('set_lang_ro', (ctx) => setupLanguage(ctx, 'ro'));
 bot.action('set_lang_en', (ctx) => setupLanguage(ctx, 'en'));
 bot.action('set_lang_ru', (ctx) => setupLanguage(ctx, 'ru'));
 
-/**
- * Команда /menu
- */
+// --- МЕНЮ ---
 bot.command('menu', async (ctx) => {
   await ctx.reply('📋 *Menu*', {
     parse_mode: 'Markdown',
@@ -112,29 +98,14 @@ bot.command('menu', async (ctx) => {
   });
 });
 
-// Команды-заглушки
-bot.command('gpt', async (ctx) => ctx.reply('🤖 Use menu to select model'));
-bot.command('design', async (ctx) => ctx.reply('🎨 *AI Design*\n\nComing soon...'));
-bot.command('audio', async (ctx) => ctx.reply('🎵 *AI Audio*\n\nComing soon...'));
-bot.command('video', async (ctx) => ctx.reply('🎬 *AI Video*\n\nComing soon...'));
-bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
-
-bot.command('model', handleModelCommand);
-bot.command('clear', handleClearCommand);
-
-/**
- * Обработка Callback запросов (кнопки меню)
- */
+// --- GPT MENU & CALLBACKS ---
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
-
-  // Игнорируем выбор языка, так как он обработан выше
   if (data.startsWith('set_lang_')) return;
 
   try {
     // Главное меню
     if (data === 'menu_main') {
-      // Здесь editMessageText работает нормально, так как сообщение уже большое
       await ctx.editMessageText('📋 *Menu*', {
         parse_mode: 'Markdown',
         reply_markup: {
@@ -155,85 +126,79 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
 
-    // --- МЕНЮ GPT (AIChat) ---
+    // AIChat Меню (ИСПРАВЛЕНО)
     if (data === 'menu_gpt') {
       const userId = ctx.from.id.toString();
       const currentModel = await store.getUserModel(userId) || 'gpt5mini';
       
-      // TODO: Получать реальный язык из базы. Пока заглушка 'ro'
+      // TODO: Брать язык из базы
       const lang = 'ro'; 
       const hasPremiumFn = () => false; 
 
       const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
       const keyboard = gptKeyboard(lang, currentModel, hasPremiumFn);
 
+      // ВОТ ТУТ БЫЛА ОШИБКА. Теперь мы явно указываем reply_markup
       await ctx.editMessageText(menuText, {
-        parse_mode: 'Markdown',
-        ...keyboard
+        parse_mode: 'Markdown', 
+        reply_markup: keyboard // <--- Исправлено
       });
       
       await ctx.answerCbQuery();
       return;
     }
 
-    // Обработка выбора модели (model_...)
+    // Обработка выбора модели
     if (data.startsWith('model_')) {
       await handleModelCallback(ctx);
       return;
     }
 
-    // Остальные меню (заглушки)
-    if (data === 'menu_design') {
-      await ctx.editMessageText('🎨 *AI Design*\n\n🚧 În dezvoltare...', {
-        reply_markup: { inline_keyboard: [[{ text: '◀️ Back', callback_data: 'menu_main' }]] }
-      });
-      await ctx.answerCbQuery();
-      return;
+    // Заглушки
+    if (['menu_design', 'menu_audio', 'menu_video'].includes(data)) {
+        await ctx.answerCbQuery('🚧 Coming soon...');
+        return;
     }
     
     await ctx.answerCbQuery();
 
   } catch (error) {
-    console.error('Callback query error:', error);
-    // Если не удалось отредактировать (например, сообщение слишком старое), шлем новое
+    console.error('Callback Error:', error);
     if (error.description && error.description.includes('message to edit not found')) {
-        await ctx.reply('❌ Session expired. Please use /menu');
+        await ctx.reply('⚠️ Session expired. Type /menu');
     } else {
-        await ctx.answerCbQuery('❌ Error');
+        // Игнорируем ошибку "message is not modified", если юзер жмет одну и ту же кнопку
+        if (!error.description.includes('message is not modified')) {
+             console.log('Error editing message:', error.description);
+        }
     }
   }
 });
 
-/**
- * Обработка текста
- */
+// --- COMMANDS ---
+bot.command('gpt', async (ctx) => ctx.reply('🤖 Use menu'));
+bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
+bot.command('model', handleModelCommand);
+bot.command('clear', handleClearCommand);
+
 bot.on('text', async (ctx) => {
-  const text = ctx.message.text;
-  if (text.startsWith('/')) return;
-  await handleTextMessage(ctx, text);
+  if (ctx.message.text.startsWith('/')) return;
+  await handleTextMessage(ctx, ctx.message.text);
 });
 
-/**
- * Обработка ошибок
- */
-bot.catch((err, ctx) => {
-  console.error('Bot error:', err);
-});
+bot.catch((err) => console.error('Global Error:', err));
 
-/**
- * Экспорт функции для Vercel
- */
 module.exports = async (req, res) => {
   try {
     if (req.method === 'POST') {
       await bot.handleUpdate(req.body);
       res.status(200).json({ ok: true });
     } else {
-      res.status(200).json({ status: 'Bot is running' });
+      res.status(200).json({ status: 'Running' });
     }
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Server Error:', error);
+    res.status(500).json({ error: 'Error' });
   }
 };
     
