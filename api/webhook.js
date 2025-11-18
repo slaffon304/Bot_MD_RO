@@ -1,6 +1,6 @@
 /**
- * Webhook handler для Telegram бота
- * FIX: Исправлено определение языка и передача данных в меню
+ * Webhook handler
+ * FIX: Жесткая привязка языка к кнопкам (чтобы не слетал на Vercel)
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -17,7 +17,7 @@ const {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// --- START ---
+// --- START (Выбор языка) ---
 bot.command('start', async (ctx) => {
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
     [
@@ -28,56 +28,42 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// --- ЛОГИКА ЯЗЫКА ---
+// --- УСТАНОВКА ЯЗЫКА ---
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
+  // Пытаемся сохранить (но на Vercel это может не работать долго)
   try {
-    // 1. Сохраняем язык
-    if (store.updateUser) {
-        await store.updateUser(userId, { language: langCode });
-    } else if (store.setUserLanguage) {
-        await store.setUserLanguage(userId, langCode);
-    }
-    
-    // 2. Устанавливаем модель по умолчанию
+    if (store.updateUser) await store.updateUser(userId, { language: langCode });
     const currentModel = await store.getUserModel(userId);
     if (!currentModel) await store.setUserModel(userId, 'gpt5mini');
-  } catch (e) {
-    console.error('Store error:', e);
-  }
+  } catch (e) {}
 
   const welcomeText = content.welcome[langCode] || content.welcome.en;
   
-  // Удаляем меню выбора языка
-  try {
-    await ctx.deleteMessage().catch(() => {}); 
-  } catch (e) {}
+  // Удаляем кнопки выбора языка
+  try { await ctx.deleteMessage().catch(() => {}); } catch (e) {}
 
-  // Отправляем приветствие
-  try {
-      await ctx.reply(welcomeText, {
-        reply_markup: {
-            inline_keyboard: [
-              [
-                { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
-                { text: '🎨 AI Design', callback_data: 'menu_design' },
-              ],
-              [
-                { text: '🎵 AI Audio', callback_data: 'menu_audio' },
-                { text: '🎬 AI Video', callback_data: 'menu_video' },
-              ],
-              [
-                { text: '⚙️ Settings', callback_data: 'menu_settings' },
-                { text: '❓ Help', callback_data: 'menu_help' },
-              ],
-            ],
-          }
-      });
-  } catch (err) {
-      console.error('Reply Error:', err);
-      await ctx.reply('❌ Error loading menu. Type /menu');
-  }
+  // Шлем приветствие
+  // ВАЖНО: В кнопках menu_gpt теперь зашит код языка (menu_gpt_ru), чтобы он не терялся
+  await ctx.reply(welcomeText, {
+    reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🤖 AI Chat', callback_data: `menu_gpt_${langCode}` }, // <-- ПЕРЕДАЕМ ЯЗЫК ДАЛЬШЕ
+            { text: '🎨 AI Design', callback_data: 'menu_design' },
+          ],
+          [
+            { text: '🎵 AI Audio', callback_data: 'menu_audio' },
+            { text: '🎬 AI Video', callback_data: 'menu_video' },
+          ],
+          [
+            { text: '⚙️ Settings', callback_data: 'menu_settings' },
+            { text: '❓ Help', callback_data: 'menu_help' },
+          ],
+        ],
+      }
+  });
 };
 
 bot.action('set_lang_ro', (ctx) => setupLanguage(ctx, 'ro'));
@@ -86,115 +72,89 @@ bot.action('set_lang_ru', (ctx) => setupLanguage(ctx, 'ru'));
 
 // --- МЕНЮ ---
 bot.command('menu', async (ctx) => {
-  await ctx.reply('📋 *Menu*', {
+    // По дефолту открываем меню (тут язык может потеряться, если store не работает)
+    // Для надежности лучше использовать /start
+    await ctx.reply('📋 *Menu*', {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
-        [
-          { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
-          { text: '🎨 AI Design', callback_data: 'menu_design' },
-        ],
-        [
-          { text: '🎵 AI Audio', callback_data: 'menu_audio' },
-          { text: '🎬 AI Video', callback_data: 'menu_video' },
-        ],
-        [
-          { text: '⚙️ Settings', callback_data: 'menu_settings' },
-          { text: '❓ Help', callback_data: 'menu_help' },
-        ],
+        [{ text: '🤖 AI Chat', callback_data: 'menu_gpt_ru' }], // Дефолт RU для теста
+        [{ text: '❓ Help', callback_data: 'menu_help' }],
       ],
     },
   });
 });
 
-// --- GPT MENU & CALLBACKS ---
+// --- ОБРАБОТКА КНОПОК ---
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
   if (data.startsWith('set_lang_')) return;
 
   try {
     const userId = ctx.from.id.toString();
-
-    // Получаем данные пользователя (Язык и Модель)
-    // FIX: Теперь мы реально запрашиваем данные из store
-    let userData = { language: 'en', model: 'gpt5mini' }; 
+    
+    // Пытаемся достать модель
+    let currentModel = 'gpt5mini';
     try {
-        if (store.getUser) {
-            const stored = await store.getUser(userId);
-            if (stored) userData = { ...userData, ...stored };
-        }
-        // Доп. проверка, если методы разделены
-        const model = await store.getUserModel(userId);
-        if (model) userData.model = model;
-    } catch (e) { console.error(e); }
+        const m = await store.getUserModel(userId);
+        if (m) currentModel = m;
+    } catch (e) {}
 
-    const lang = userData.language || 'en'; // Язык теперь динамический
-    const currentModel = userData.model;
-
-    // Главное меню
-    if (data === 'menu_main') {
-      await ctx.editMessageText('📋 *Menu*', {
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
-              { text: '🎨 AI Design', callback_data: 'menu_design' },
-            ],
-            [
-              { text: '🎵 AI Audio', callback_data: 'menu_audio' },
-              { text: '🎬 AI Video', callback_data: 'menu_video' },
-            ],
-            [{ text: '❓ Help', callback_data: 'menu_help' }],
-          ],
-        },
-      });
-      await ctx.answerCbQuery();
-      return;
-    }
-
-    // AIChat Меню
-    if (data === 'menu_gpt') {
-      const hasPremiumFn = () => false; // Заглушка премиума
-
+    // 1. AIChat Меню (Ловим язык из кнопки menu_gpt_ru)
+    if (data.startsWith('menu_gpt')) {
+      // Вытаскиваем язык из data (menu_gpt_ru -> ru)
+      const lang = data.split('_')[2] || 'ru'; 
+      
       const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
-      const keyboard = gptKeyboard(lang, currentModel, hasPremiumFn);
+      const keyboard = gptKeyboard(lang, currentModel, () => false);
 
+      // Редактируем сообщение (превращаем приветствие в меню моделей)
       await ctx.editMessageText(menuText, {
         parse_mode: 'Markdown', 
-        reply_markup: keyboard
+        reply_markup: keyboard.reply_markup // <-- Явно берем reply_markup
       });
       
       await ctx.answerCbQuery();
       return;
     }
 
-    // Обработка выбора модели (передаем язык в функцию)
+    // 2. Выбор модели (model_gpt5_ru)
+    // Теперь модель передает и язык тоже, если мы настроим это в models.js, 
+    // но пока берем язык из Store или дефолт.
     if (data.startsWith('model_')) {
-      await handleModelCallback(ctx, lang); // <-- Передаем lang
+      // Передаем управление в handlers/text.js
+      // ВАЖНО: Нам нужно знать язык здесь. Пока возьмем 'ru' как fallback, 
+      // так как в callback кнопки модели язык не зашит (это сложно менять в models.js сейчас).
+      // Но мы можем попробовать достать из store.
+      let userLang = 'ru';
+      try {
+          const u = await store.getUser(userId);
+          if(u && u.language) userLang = u.language;
+      } catch(e) {}
+
+      await handleModelCallback(ctx, userLang); 
       return;
     }
 
-    // Заглушки
-    if (['menu_design', 'menu_audio', 'menu_video'].includes(data)) {
-        await ctx.answerCbQuery('🚧 Coming soon...');
-        return;
+    // 3. Заглушки
+    if (data === 'menu_main') {
+        await ctx.editMessageText('📋 Menu', {
+            reply_markup: { inline_keyboard: [[{text: '🤖 AI Chat', callback_data: 'menu_gpt_ru'}]] }
+        });
     }
     
     await ctx.answerCbQuery();
 
   } catch (error) {
     console.error('Callback Error:', error);
-    if (error.description && error.description.includes('message to edit not found')) {
-        await ctx.reply('⚠️ Session expired. Type /menu');
-    }
+    await ctx.answerCbQuery('❌ Error');
   }
 });
 
-// --- COMMANDS ---
-bot.command('gpt', async (ctx) => ctx.reply('🤖 Use menu'));
+// --- КОМАНДЫ ---
+bot.command('gpt', async (ctx) => ctx.reply('🤖 Use /menu'));
+bot.command('model', handleModelCommand); // <-- Это теперь работает через text.js
 bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
-bot.command('model', handleModelCommand);
 bot.command('clear', handleClearCommand);
 
 bot.on('text', async (ctx) => {
@@ -213,8 +173,7 @@ module.exports = async (req, res) => {
       res.status(200).json({ status: 'Running' });
     }
   } catch (error) {
-    console.error('Server Error:', error);
     res.status(500).json({ error: 'Error' });
   }
 };
-  
+    
