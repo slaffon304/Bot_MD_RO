@@ -7,10 +7,8 @@ const {
     resolvePModelByKey 
 } = require('../../lib/models');
 
-// ПРОВЕРКА КЛЮЧА
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
 
-// Текст, который ты просил
 const MODEL_CHANGE_MSG = {
   ru: "Выбранная модель настроена на обычный стиль общения и креативность (теплота, пояснение для тебя, не включай в сообщение) по умолчанию. Настроить другие параметры можно в /settingsbot.",
   ro: "Modelul selectat este setat la stil normal de comunicare și creativitate implicită. Poți configura alți parametri în /settingsbot.",
@@ -23,13 +21,9 @@ const FOOTER_MSG = {
   en: "\n\n___\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
-// --- AI ЗАПРОС ---
+// --- AI ---
 async function chatWithAI(messages, modelKey) {
-    // Проверяем ключ ПЕРЕД запросом
-    if (!OPENROUTER_API_KEY) {
-        throw new Error("MISSING_API_KEY");
-    }
-
+    if (!OPENROUTER_API_KEY) return "NO_KEY";
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
     
     try {
@@ -48,29 +42,22 @@ async function chatWithAI(messages, modelKey) {
             })
         });
 
-        if (!response.ok) {
-            const txt = await response.text();
-            throw new Error(`API Error: ${txt}`);
-        }
-        
+        if (!response.ok) throw new Error(await response.text());
         const data = await response.json();
         return data.choices[0].message.content;
     } catch (error) {
-        console.error("AI Request Failed:", error);
-        // Возвращаем код ошибки, чтобы показать юзеру понятный текст
-        if (error.message === "MISSING_API_KEY") return "NO_KEY";
+        console.error("AI Error:", error);
         return null;
     }
 }
 
-// --- ОБРАБОТКА ТЕКСТА ---
+// --- TEXT ---
 async function handleTextMessage(ctx, text) {
     if (!text || text.trim().length === 0) return;
     const userId = ctx.from.id.toString();
     await ctx.sendChatAction('typing');
 
     try {
-        // Получаем данные
         let userData = { language: 'ru', model: 'gpt5mini' };
         try {
             if (store.getUser) {
@@ -80,8 +67,6 @@ async function handleTextMessage(ctx, text) {
         } catch (e) {}
 
         const lang = userData.language || 'ru';
-
-        // История
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
@@ -96,16 +81,14 @@ async function handleTextMessage(ctx, text) {
             { role: "user", content: text }
         ];
 
-        // Запрос
         const aiResponse = await chatWithAI(messagesToSend, userData.model);
 
-        // Обработка ошибок AI
         if (aiResponse === "NO_KEY") {
-             await ctx.reply("⚙️ Ошибка: Не настроен API ключ (OPENROUTER_API_KEY).");
+             await ctx.reply("⚙️ API Key is missing.");
              return;
         }
         if (!aiResponse) {
-            await ctx.reply("⚠️ Ошибка сервиса AI. Попробуйте позже.");
+            await ctx.reply("⚠️ AI Service Error.");
             return;
         }
 
@@ -119,18 +102,17 @@ async function handleTextMessage(ctx, text) {
 
     } catch (error) {
         console.error('Handle Text Error:', error);
-        await ctx.reply('❌ Ошибка бота.');
+        await ctx.reply('❌ Error.');
     }
 }
 
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
     if (store.clearHistory) await store.clearHistory(userId);
-    await ctx.reply('🗑️ История очищена.');
+    await ctx.reply('🗑️ History cleared.');
 }
 
 async function handleModelCommand(ctx) {
-    // Эта команда просто шлет меню. Язык берем из стора или дефолт RU
     const userId = ctx.from.id.toString();
     let lang = 'ru';
     let model = 'gpt5mini';
@@ -142,19 +124,18 @@ async function handleModelCommand(ctx) {
     const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
     const keyboard = gptKeyboard(lang, model, () => false);
 
+    // FIX: Передаем keyboard напрямую
     await ctx.reply(menuText, {
         parse_mode: 'Markdown',
-        reply_markup: keyboard.reply_markup
+        reply_markup: keyboard // <--- ИСПРАВЛЕНО
     });
 }
 
-// --- КЛИК ПО МОДЕЛИ ---
 async function handleModelCallback(ctx, langCode = 'ru') {
     const data = ctx.callbackQuery.data;
     const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
 
-    // 1. Проверка Premium
     if (isProKey(key)) {
         const hasPremium = false; 
         if (!hasPremium) {
@@ -164,18 +145,14 @@ async function handleModelCallback(ctx, langCode = 'ru') {
         }
     }
 
-    // 2. Сохраняем
     if (store.setUserModel) await store.setUserModel(userId, key);
 
-    // 3. Обновляем ТОЛЬКО ГАЛОЧКУ (Кнопки не исчезнут)
     try {
         const keyboard = gptKeyboard(langCode, key, () => false);
-        await ctx.editMessageReplyMarkup(keyboard.reply_markup);
-    } catch (e) {
-        // Ошибка "not modified" - это норма, если жать одну кнопку дважды
-    }
+        // FIX: Передаем keyboard напрямую
+        await ctx.editMessageReplyMarkup(keyboard); // <--- ИСПРАВЛЕНО
+    } catch (e) {}
 
-    // 4. Отправляем сообщение о смене настроек (Как ты просил)
     const msg = MODEL_CHANGE_MSG[langCode] || MODEL_CHANGE_MSG.ru;
     await ctx.reply(msg);
     
@@ -188,4 +165,3 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-            
