@@ -15,10 +15,11 @@ const MODEL_CHANGE_MSG = {
   en: "The selected model is set to normal communication style and creativity by default. You can configure other parameters in /settingsbot."
 };
 
+// ИСПРАВЛЕНО: Заменил ___ на безопасный разделитель, чтобы не ломать Markdown
 const FOOTER_MSG = {
-  ru: "\n\n___\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
-  ro: "\n\n___\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
-  en: "\n\n___\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
+  ru: "\n\n➖➖➖➖➖➖\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
+  ro: "\n\n➖➖➖➖➖➖\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
+  en: "\n\n➖➖➖➖➖➖\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
 // --- AI ---
@@ -93,7 +94,10 @@ async function handleTextMessage(ctx, text) {
         }
 
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
-        await ctx.reply(aiResponse + footer, { parse_mode: 'Markdown' });
+        
+        // ИСПРАВЛЕНО: Убрал { parse_mode: 'Markdown' }. 
+        // Это предотвращает краш бота, если ИИ пришлет спецсимволы (*, _, [ и т.д.)
+        await ctx.reply(aiResponse + footer);
 
         if (store.addToHistory) {
             await store.addToHistory(userId, { role: "user", content: text });
@@ -124,10 +128,9 @@ async function handleModelCommand(ctx) {
     const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
     const keyboard = gptKeyboard(lang, model, () => false);
 
-    // FIX: Передаем keyboard напрямую
     await ctx.reply(menuText, {
         parse_mode: 'Markdown',
-        reply_markup: keyboard // <--- ИСПРАВЛЕНО
+        reply_markup: keyboard 
     });
 }
 
@@ -149,8 +152,7 @@ async function handleModelCallback(ctx, langCode = 'ru') {
 
     try {
         const keyboard = gptKeyboard(langCode, key, () => false);
-        // FIX: Передаем keyboard напрямую
-        await ctx.editMessageReplyMarkup(keyboard); // <--- ИСПРАВЛЕНО
+        await ctx.editMessageReplyMarkup(keyboard); 
     } catch (e) {}
 
     const msg = MODEL_CHANGE_MSG[langCode] || MODEL_CHANGE_MSG.ru;
@@ -165,3 +167,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
+    
