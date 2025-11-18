@@ -1,5 +1,5 @@
 const store = require('../../lib/store');
-// Импорт списка моделей и утилит
+const content = require('../../content.json');
 const { 
     isProKey, 
     gptKeyboard, 
@@ -7,25 +7,33 @@ const {
     resolvePModelByKey 
 } = require('../../lib/models');
 
-// --- КОНФИГУРАЦИЯ ---
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; // Убедись, что ключ есть в Vercel
-const SITE_URL = process.env.VERCEL_URL || 'https://bot-domain.vercel.app';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
+const SITE_URL = process.env.VERCEL_URL || 'https://bot.domain';
 const APP_NAME = 'Telegram AI Bot';
 
-// Сообщения при смене модели
-const MODEL_CHANGE_MSG = {
-  ru: "✅ Модель изменена.\nВыбранная модель настроена на обычный стиль общения. Настроить другие параметры (креативность, роль) можно в /settings.",
-  ro: "✅ Model schimbat.\nModelul selectat este setat la stil normal de comunicare. Poți configura alți parametri în /settings.",
-  en: "✅ Model changed.\nThe selected model is set to normal communication style. You can configure other parameters in /settings."
+// --- СООБЩЕНИЯ ---
+
+// Текст, который добавляется в конце каждого ответа AI
+const FOOTER_MSG = {
+  ru: "\n\n___\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
+  ro: "\n\n___\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
+  en: "\n\n___\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
+// Всплывающее уведомление при смене модели
+const TOAST_MSG = {
+  ru: "✅ Модель изменена!",
+  ro: "✅ Model schimbat!",
+  en: "✅ Model changed!"
+};
+
+// --- ФУНКЦИИ ---
+
 /**
- * Функция прямого запроса к LLM (OpenRouter)
- * Поддерживает все модели: GPT, Claude, DeepSeek, Gemini
+ * Запрос к OpenRouter
  */
 async function chatWithAI(messages, modelKey) {
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
-    
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
@@ -38,78 +46,78 @@ async function chatWithAI(messages, modelKey) {
             body: JSON.stringify({
                 "model": pmodel,
                 "messages": messages,
-                // Параметры для стабильности
-                "temperature": 0.7, 
-                "max_tokens": 2000
+                "temperature": 0.7
             })
         });
-
-        if (!response.ok) {
-            const errorData = await response.text();
-            throw new Error(`API Error: ${response.status} - ${errorData}`);
-        }
-
+        if (!response.ok) throw new Error(await response.text());
         const data = await response.json();
         return data.choices[0].message.content;
     } catch (error) {
-        console.error("AI Request Failed:", error);
+        console.error("AI Error:", error);
         return null;
     }
 }
 
 /**
- * ОБРАБОТКА ТЕКСТОВЫХ СООБЩЕНИЙ
+ * Обработка входящего текста
+ * 1. Сохраняет историю (НЕ удаляет сообщения)
+ * 2. Отправляет запрос AI
+ * 3. Добавляет Footer с подсказками
  */
 async function handleTextMessage(ctx, text) {
-    // 1. Игнорируем пустые сообщения
     if (!text || text.trim().length === 0) return;
-
     const userId = ctx.from.id.toString();
     
-    // 2. Показываем статус "печатает..."
+    // Отображаем статус "печатает..."
     await ctx.sendChatAction('typing');
 
     try {
-        // 3. Получаем настройки пользователя
-        // Используем getUserModel или дефолт
-        let modelKey = 'gpt5mini';
-        if (store.getUserModel) {
-            modelKey = await store.getUserModel(userId) || 'gpt5mini';
-        }
+        // Определяем язык и модель
+        let userData = { language: 'ro', model: 'gpt5mini' };
+        try {
+            if (store.getUser) {
+                const stored = await store.getUser(userId);
+                if (stored) userData = { ...userData, ...stored };
+            } else {
+                const m = await store.getUserModel(userId);
+                if (m) userData.model = m;
+            }
+        } catch (e) {}
 
-        // 4. Формируем историю сообщений
+        const lang = userData.language || 'ro';
+        
+        // История
         let history = [];
-        if (store.getHistory) {
-            history = await store.getHistory(userId) || [];
-        }
+        if (store.getHistory) history = await store.getHistory(userId) || [];
 
-        // --- ВАЖНО: СИСТЕМНЫЙ ПРОМПТ ---
-        // Инструкция отвечать на языке пользователя
+        // Системный промпт
         const systemPrompt = {
             role: "system",
-            content: "You are a helpful and intelligent AI assistant. IMPORTANT INSTRUCTION: Always detect the language of the user's latest message and reply in that SAME language. If the user asks in Romanian, reply in Romanian. If in Russian, reply in Russian. Keep formatting clean (Markdown)."
+            content: "You are a helpful AI assistant. Detect user language and reply in the same language."
         };
 
-        // Собираем массив для отправки: System + History + New Message
-        // Ограничиваем историю последними 10 сообщениями, чтобы не превысить лимиты
         const messagesToSend = [
             systemPrompt,
-            ...history.slice(-10), 
+            ...history.slice(-8), 
             { role: "user", content: text }
         ];
 
-        // 5. Отправляем запрос нейросети
-        const aiResponse = await chatWithAI(messagesToSend, modelKey);
+        // Запрос к AI
+        const aiResponse = await chatWithAI(messagesToSend, userData.model);
 
         if (!aiResponse) {
-            await ctx.reply('⚠️ Error: AI service is currently unavailable. Try again later.');
+            await ctx.reply('⚠️ AI service unavailable. Check API Key.');
             return;
         }
 
-        // 6. Отправляем ответ пользователю
-        await ctx.reply(aiResponse, { parse_mode: 'Markdown' });
+        // Формируем ответ с футером
+        const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
+        const finalMessage = aiResponse + footer;
 
-        // 7. Сохраняем в историю (если есть store)
+        // Отправляем ответ (НОВОЕ сообщение, ничего не удаляем)
+        await ctx.reply(finalMessage, { parse_mode: 'Markdown' });
+
+        // Сохраняем в историю
         if (store.addToHistory) {
             await store.addToHistory(userId, { role: "user", content: text });
             await store.addToHistory(userId, { role: "assistant", content: aiResponse });
@@ -117,39 +125,56 @@ async function handleTextMessage(ctx, text) {
 
     } catch (error) {
         console.error('Handle Text Error:', error);
-        await ctx.reply('❌ An error occurred while processing your request.');
+        await ctx.reply('❌ Error processing request.');
     }
 }
 
-/**
- * ОЧИСТКА ИСТОРИИ
- */
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
-    if (store.clearHistory) {
-        await store.clearHistory(userId);
-    }
-    await ctx.reply('🗑️ Context cleared. Starting new conversation.');
+    if (store.clearHistory) await store.clearHistory(userId);
+    await ctx.reply('🗑️ Context cleared.');
 }
 
 /**
- * КОМАНДА /model
+ * Команда /model - показывает меню выбора (без удаления истории)
  */
 async function handleModelCommand(ctx) {
-    await ctx.reply('Please use /menu -> AI Chat to select a model.');
+    const userId = ctx.from.id.toString();
+    
+    let userData = { language: 'ro', model: 'gpt5mini' };
+    try {
+        if (store.getUser) {
+            const stored = await store.getUser(userId);
+            if (stored) userData = { ...userData, ...stored };
+        } else {
+            const m = await store.getUserModel(userId);
+            if (m) userData.model = m;
+        }
+    } catch (e) {}
+
+    const lang = userData.language || 'ro';
+    const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
+    
+    // Шлем новое сообщение с меню
+    const keyboard = gptKeyboard(lang, userData.model, () => false);
+    await ctx.reply(menuText, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard
+    });
 }
 
 /**
- * ОБРАБОТКА НАЖАТИЙ НА КНОПКИ МОДЕЛЕЙ (CALLBACK)
+ * Нажатие на кнопку модели
+ * Меняет галочку ✅, но НЕ удаляет сообщение и НЕ шлем спам в чат
  */
-async function handleModelCallback(ctx, langCode = 'ru') {
+async function handleModelCallback(ctx, langCode = 'ro') {
     const data = ctx.callbackQuery.data;
     const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
 
     // 1. Проверка Premium
     if (isProKey(key)) {
-        const hasPremium = false; // ЗАГЛУШКА: Замени на проверку из БД
+        const hasPremium = false; 
         if (!hasPremium) {
             const msg = premiumMsg(langCode);
             await ctx.answerCbQuery(msg, { show_alert: true });
@@ -157,28 +182,22 @@ async function handleModelCallback(ctx, langCode = 'ru') {
         }
     }
 
-    // 2. Сохранение выбора
-    if (store.setUserModel) {
-        await store.setUserModel(userId, key);
-    }
+    // 2. Сохраняем выбор в базу
+    if (store.setUserModel) await store.setUserModel(userId, key);
 
-    // 3. Обновление галочки в меню
+    // 3. Обновляем клавиатуру (переставляем галочку)
+    // Это происходит "тихо" внутри того же сообщения
     try {
-        const hasPremiumFn = () => false; 
-        const keyboard = gptKeyboard(langCode, key, hasPremiumFn);
+        const keyboard = gptKeyboard(langCode, key, () => false);
         await ctx.editMessageReplyMarkup(keyboard.reply_markup);
     } catch (e) {
-        // Игнорируем, если клавиатура не изменилась
+        // Если юзер нажал на уже выбранную модель, Telegram вернет ошибку "not modified"
+        // Мы её просто игнорируем
     }
 
-    // 4. Инфо-сообщение пользователю
-    const infoText = MODEL_CHANGE_MSG[langCode] || MODEL_CHANGE_MSG.en;
-    
-    // Чтобы не спамить, можно использовать answerCbQuery с текстом (всплывашка сверху)
-    // Или сообщение в чат, как ты просил:
-    await ctx.reply(infoText);
-    
-    await ctx.answerCbQuery();
+    // 4. Показываем всплывающее уведомление сверху ("Toast")
+    const toast = TOAST_MSG[langCode] || TOAST_MSG.en;
+    await ctx.answerCbQuery(toast);
 }
 
 module.exports = {
@@ -187,4 +206,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-        
+    
