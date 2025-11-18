@@ -1,12 +1,12 @@
 /**
  * Webhook handler для Telegram бота
- * FIX: Исправлен импорт gptKeyboard и логика меню
+ * FIX: Замена editMessageText на delete+reply для стабильности
  */
 
 const { Telegraf, Markup } = require('telegraf');
 const content = require('../content.json');
 const store = require('../lib/store');
-// ВАЖНО: Импорт моделей перенесен наверх
+// ВАЖНО: Импорт моделей всегда наверху
 const { gptKeyboard } = require('../lib/models');
 
 // Импортируем handlers
@@ -33,16 +33,16 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// Функция установки языка
+// Функция установки языка (ИСПРАВЛЕНА ЛОГИКА)
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
   try {
-    // Сохраняем язык, если store это поддерживает (если нет - просто идем дальше)
+    // Сохраняем язык
     if (store.updateUser) {
         await store.updateUser(userId, { language: langCode });
     }
-    // Устанавливаем дефолтную модель, если её нет
+    // Устанавливаем дефолтную модель
     const currentModel = await store.getUserModel(userId);
     if (!currentModel) {
       await store.setUserModel(userId, 'gpt5mini');
@@ -53,7 +53,15 @@ const setupLanguage = async (ctx, langCode) => {
 
   const welcomeText = content.welcome[langCode] || content.welcome.en;
   
-  await ctx.editMessageText(welcomeText, {
+  // FIX: Удаляем меню выбора языка и отправляем новое чистое сообщение
+  // Это предотвращает ошибку "message to edit not found"
+  try {
+    await ctx.deleteMessage().catch(() => {}); 
+  } catch (e) { 
+    console.log('Message already deleted'); 
+  }
+
+  await ctx.reply(welcomeText, {
     parse_mode: 'Markdown',
     reply_markup: {
         inline_keyboard: [
@@ -66,7 +74,7 @@ const setupLanguage = async (ctx, langCode) => {
             { text: '🎬 AI Video', callback_data: 'menu_video' },
           ],
           [
-            { text: '⚙️ Setări / Settings', callback_data: 'menu_settings' },
+            { text: '⚙️ Settings', callback_data: 'menu_settings' },
             { text: '❓ Help', callback_data: 'menu_help' },
           ],
         ],
@@ -126,8 +134,8 @@ bot.on('callback_query', async (ctx) => {
   try {
     // Главное меню
     if (data === 'menu_main') {
-      await ctx.deleteMessage().catch(() => {}); // Удаляем старое или редактируем
-      await ctx.reply('📋 *Menu*', {
+      // Здесь editMessageText работает нормально, так как сообщение уже большое
+      await ctx.editMessageText('📋 *Menu*', {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
@@ -150,21 +158,13 @@ bot.on('callback_query', async (ctx) => {
     // --- МЕНЮ GPT (AIChat) ---
     if (data === 'menu_gpt') {
       const userId = ctx.from.id.toString();
-      
-      // Получаем модель пользователя
       const currentModel = await store.getUserModel(userId) || 'gpt5mini';
       
-      // Определяем язык (можно доработать получение из базы, пока берем из сессии или дефолт)
-      // Если есть store.getUserLanguage, используй его. Пока поставим заглушку 'ro' или попробуем определить
-      // В идеале язык нужно хранить в БД. Пока поставим 'ro' как базу, если неизвестно.
+      // TODO: Получать реальный язык из базы. Пока заглушка 'ro'
       const lang = 'ro'; 
-      
-      // Проверка премиума (заглушка)
-      const hasPremiumFn = () => false; // Поставь true для теста премиум кнопок
+      const hasPremiumFn = () => false; 
 
       const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
-
-      // Генерируем клавиатуру из models.js
       const keyboard = gptKeyboard(lang, currentModel, hasPremiumFn);
 
       await ctx.editMessageText(menuText, {
@@ -191,12 +191,16 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
     
-    // Если ничего не совпало
     await ctx.answerCbQuery();
 
   } catch (error) {
     console.error('Callback query error:', error);
-    await ctx.answerCbQuery('❌ Error');
+    // Если не удалось отредактировать (например, сообщение слишком старое), шлем новое
+    if (error.description && error.description.includes('message to edit not found')) {
+        await ctx.reply('❌ Session expired. Please use /menu');
+    } else {
+        await ctx.answerCbQuery('❌ Error');
+    }
   }
 });
 
@@ -232,4 +236,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 };
-              
+    
