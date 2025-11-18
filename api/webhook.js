@@ -1,13 +1,15 @@
 /**
  * Webhook handler для Telegram бота
- * Логика: Выбор языка -> Приветствие -> Умные ответы
+ * FIX: Исправлен импорт gptKeyboard и логика меню
  */
 
 const { Telegraf, Markup } = require('telegraf');
 const content = require('../content.json');
 const store = require('../lib/store');
+// ВАЖНО: Импорт моделей перенесен наверх
+const { gptKeyboard } = require('../lib/models');
 
-// Импорт хендлеров
+// Импортируем handlers
 const {
   handleTextMessage,
   handleClearCommand,
@@ -15,13 +17,13 @@ const {
   handleModelCallback,
 } = require('./handlers/text');
 
+// Инициализация бота
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// --- ЛОГИКА ВЫБОРА ЯЗЫКА ---
-
-// Команда /start
+/**
+ * Команда /start - Выбор языка
+ */
 bot.command('start', async (ctx) => {
-  // Предлагаем выбрать язык
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
     [
       Markup.button.callback('🇹🇩 Română', 'set_lang_ro'),
@@ -31,33 +33,26 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// Обработка выбора языка
+// Функция установки языка
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
-  // 1. Сохраняем язык пользователя и дефолтную модель (если нет)
-  // ВАЖНО: Убедись, что в store.js есть метод setUserData или update, иначе добавь его.
-  // Здесь мы используем существующий setUserModel, предполагая расширение,
-  // или просто сохраняем контекст сессии, если базы нет.
-  
   try {
-    // Попытка сохранить язык (если store поддерживает)
+    // Сохраняем язык, если store это поддерживает (если нет - просто идем дальше)
     if (store.updateUser) {
         await store.updateUser(userId, { language: langCode });
     }
-    // Установка модели по умолчанию, если юзер новый
+    // Устанавливаем дефолтную модель, если её нет
     const currentModel = await store.getUserModel(userId);
     if (!currentModel) {
-      await store.setUserModel(userId, 'gpt-4o-mini');
+      await store.setUserModel(userId, 'gpt5mini');
     }
   } catch (e) {
     console.error('Error saving user data:', e);
   }
 
-  // 2. Отправляем приветственное сообщение на выбранном языке
-  const welcomeText = content.welcome[langCode];
+  const welcomeText = content.welcome[langCode] || content.welcome.en;
   
-  // Главное меню тоже можно локализовать, но пока оставим универсальные кнопки
   await ctx.editMessageText(welcomeText, {
     parse_mode: 'Markdown',
     reply_markup: {
@@ -79,158 +74,151 @@ const setupLanguage = async (ctx, langCode) => {
   });
 };
 
-// Слушатели кнопок языка
+// Обработчики кнопок языка
 bot.action('set_lang_ro', (ctx) => setupLanguage(ctx, 'ro'));
 bot.action('set_lang_en', (ctx) => setupLanguage(ctx, 'en'));
 bot.action('set_lang_ru', (ctx) => setupLanguage(ctx, 'ru'));
 
-
-// --- ОСТАЛЬНЫЕ КОМАНДЫ ---
-
+/**
+ * Команда /menu
+ */
 bot.command('menu', async (ctx) => {
-    // Тут можно добавить проверку языка юзера, чтобы выдавать меню на нужном языке
-    // Пока оставим дефолтное на румынском/английском
-    await ctx.reply('📋 *Menu*', {
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
-            { text: '🎨 AI Design', callback_data: 'menu_design' },
-          ],
-          [
-            { text: '🎵 AI Audio', callback_data: 'menu_audio' },
-            { text: '🎬 AI Video', callback_data: 'menu_video' },
-          ],
-          [
-            { text: '🔍 Search', callback_data: 'menu_search' },
-            { text: '📚 Docs', callback_data: 'menu_docs' },
-          ],
-        ],
-      },
-    });
-  });
-
-bot.command('gpt', async (ctx) => {
-  await ctx.reply('🤖 *AI Chat*\n\nType anything...', {
+  await ctx.reply('📋 *Menu*', {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🔄 Model', callback_data: 'action_model' }, { text: '🗑️ Clear', callback_data: 'action_clear' }],
-        [{ text: '◀️ Menu', callback_data: 'menu_main' }],
+        [
+          { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
+          { text: '🎨 AI Design', callback_data: 'menu_design' },
+        ],
+        [
+          { text: '🎵 AI Audio', callback_data: 'menu_audio' },
+          { text: '🎬 AI Video', callback_data: 'menu_video' },
+        ],
+        [
+          { text: '⚙️ Settings', callback_data: 'menu_settings' },
+          { text: '❓ Help', callback_data: 'menu_help' },
+        ],
       ],
     },
   });
 });
 
-// Заглушки для других команд
+// Команды-заглушки
+bot.command('gpt', async (ctx) => ctx.reply('🤖 Use menu to select model'));
 bot.command('design', async (ctx) => ctx.reply('🎨 *AI Design*\n\nComing soon...'));
 bot.command('audio', async (ctx) => ctx.reply('🎵 *AI Audio*\n\nComing soon...'));
 bot.command('video', async (ctx) => ctx.reply('🎬 *AI Video*\n\nComing soon...'));
+bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
 
-// Хендлеры логики (модели, очистка)
-bot.command('help', async (ctx) => ctx.reply(content.welcome.en)); // По дефолту EN или можно брать из базы
 bot.command('model', handleModelCommand);
 bot.command('clear', handleClearCommand);
 
-// Обработка Callback-ов
+/**
+ * Обработка Callback запросов (кнопки меню)
+ */
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
 
-  // Если это выбор языка - мы уже обработали выше через bot.action, 
-  // но если попадет сюда, игнорируем или обрабатываем.
-  if (data.startsWith('set_lang_')) return; 
+  // Игнорируем выбор языка, так как он обработан выше
+  if (data.startsWith('set_lang_')) return;
 
   try {
+    // Главное меню
     if (data === 'menu_main') {
-        await ctx.deleteMessage(); // Или edit
-        await ctx.reply('📋 Menu', { /* Клавиатура меню */ }); 
-        return;
-    }
-    
-    // ... (Тут твой код обработки остальных меню: gpt, design, video и т.д.)
-    // Я сократил для примера, вставь сюда свои if (data === 'menu_gpt') и т.д. из старого файла
-    
-    // Обработка выбора модели
-    if (data.startsWith('model_')) {
-      await handleModelCallback(ctx);
+      await ctx.deleteMessage().catch(() => {}); // Удаляем старое или редактируем
+      await ctx.reply('📋 *Menu*', {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🤖 AI Chat', callback_data: 'menu_gpt' },
+              { text: '🎨 AI Design', callback_data: 'menu_design' },
+            ],
+            [
+              { text: '🎵 AI Audio', callback_data: 'menu_audio' },
+              { text: '🎬 AI Video', callback_data: 'menu_video' },
+            ],
+            [{ text: '❓ Help', callback_data: 'menu_help' }],
+          ],
+        },
+      });
+      await ctx.answerCbQuery();
       return;
     }
-    
-    // Действия
-    if (data === 'action_model') {
-        await handleModelCommand(ctx);
-        return;
-    }
 
-    if (    // В начале файла добавь импорт, если его нет:
-    const { gptKeyboard } = require('../lib/models'); 
-
-    // ... внутри bot.on('callback_query') ...
-
+    // --- МЕНЮ GPT (AIChat) ---
     if (data === 'menu_gpt') {
       const userId = ctx.from.id.toString();
       
-      // 1. Получаем данные пользователя (язык и модель)
-      let userData = { language: 'ro', model: 'gpt5mini' }; // Дефолт
-      try {
-        if (store.getUser) {
-           const stored = await store.getUser(userId);
-           if (stored) userData = { ...userData, ...stored };
-        }
-      } catch (e) { console.error(e); }
+      // Получаем модель пользователя
+      const currentModel = await store.getUserModel(userId) || 'gpt5mini';
+      
+      // Определяем язык (можно доработать получение из базы, пока берем из сессии или дефолт)
+      // Если есть store.getUserLanguage, используй его. Пока поставим заглушку 'ro' или попробуем определить
+      // В идеале язык нужно хранить в БД. Пока поставим 'ro' как базу, если неизвестно.
+      const lang = 'ro'; 
+      
+      // Проверка премиума (заглушка)
+      const hasPremiumFn = () => false; // Поставь true для теста премиум кнопок
 
-      const lang = userData.language || 'ro';
-      const currentModel = userData.model || 'gpt5mini';
+      const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
 
-      // 2. Проверка премиума (заглушка, пока реализуй как false или подключи базу)
-      const hasPremium = false; // Поставь true для теста, если хочешь видеть все открытым
-      const hasPremiumFn = () => hasPremium; 
+      // Генерируем клавиатуру из models.js
+      const keyboard = gptKeyboard(lang, currentModel, hasPremiumFn);
 
-      // 3. Отправляем меню с моделями
-      // Используем editMessageText, чтобы заменить главное меню на меню GPT
-      await ctx.editMessageText(content.gpt_menu[lang], {
+      await ctx.editMessageText(menuText, {
         parse_mode: 'Markdown',
-        ...gptKeyboard(lang, currentModel, hasPremiumFn)
+        ...keyboard
       });
       
       await ctx.answerCbQuery();
       return;
     }
-) {
-        await handleModelCommand(ctx);
-        return;
+
+    // Обработка выбора модели (model_...)
+    if (data.startsWith('model_')) {
+      await handleModelCallback(ctx);
+      return;
     }
 
+    // Остальные меню (заглушки)
+    if (data === 'menu_design') {
+      await ctx.editMessageText('🎨 *AI Design*\n\n🚧 În dezvoltare...', {
+        reply_markup: { inline_keyboard: [[{ text: '◀️ Back', callback_data: 'menu_main' }]] }
+      });
+      await ctx.answerCbQuery();
+      return;
+    }
+    
+    // Если ничего не совпало
     await ctx.answerCbQuery();
 
   } catch (error) {
-    console.error('Callback error:', error);
-    await ctx.answerCbQuery('Error');
+    console.error('Callback query error:', error);
+    await ctx.answerCbQuery('❌ Error');
   }
 });
 
-
-// --- ОБРАБОТКА ТЕКСТА (ГЛАВНАЯ ФИШКА) ---
-
+/**
+ * Обработка текста
+ */
 bot.on('text', async (ctx) => {
   const text = ctx.message.text;
   if (text.startsWith('/')) return;
-
-  // ВАЖНО: Чтобы бот отвечал на языке запроса, это нужно делать НЕ здесь,
-  // а в файле, который отправляет запрос к AI (обычно lib/api/openrouter.js).
-  // Но мы передадим это намерение через handleTextMessage.
-  
-  // Мы предполагаем, что handleTextMessage вызывает AI.
-  // Логика "отвечай на языке запроса" должна быть в System Prompt.
-  
-  await handleTextMessage(ctx, text); 
+  await handleTextMessage(ctx, text);
 });
 
+/**
+ * Обработка ошибок
+ */
 bot.catch((err, ctx) => {
   console.error('Bot error:', err);
 });
 
+/**
+ * Экспорт функции для Vercel
+ */
 module.exports = async (req, res) => {
   try {
     if (req.method === 'POST') {
@@ -240,7 +228,8 @@ module.exports = async (req, res) => {
       res.status(200).json({ status: 'Bot is running' });
     }
   } catch (error) {
-    res.status(500).json({ error: 'Error' });
+    console.error('Webhook error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
-  
+              
