@@ -9,13 +9,28 @@ const {
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
 
+// 1. СЛОВАРЬ ИМЕН (Добавь сюда точные ключи своих кнопок)
+// Ключ слева должен совпадать с тем, что прописано в кнопках (callback_data)
+const MODEL_NAMES = {
+    'gpt5mini': 'GPT-5 Mini',
+    'gpt-4o-mini': 'GPT-4o Mini',
+    'gpt-4o': 'GPT-4 Omni',
+    'claude-3-5-sonnet': 'Claude 3.5 Sonnet',
+    'deepseek-chat': 'DeepSeek V3',
+    'deepseek-r1': 'DeepSeek R1',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash',
+    'gemini-2.5-pro': 'Gemini 2.5 Pro',
+    // Если твои ключи отличаются (например, просто 'gemini'), добавь их сюда:
+    'gemini': 'Gemini 2.5',
+    'deepseek': 'DeepSeek V3'
+};
+
 const MODEL_CHANGE_MSG = {
   ru: "Выбранная модель настроена на обычный стиль общения и креативность по умолчанию. Настроить другие параметры можно в /settingsbot.",
   ro: "Modelul selectat este setat la stil normal de comunicare și creativitate implicită. Poți configura alți parametri în /settingsbot.",
   en: "The selected model is set to normal communication style and creativity by default. You can configure other parameters in /settingsbot."
 };
 
-// Используем безопасный разделитель, чтобы не ломать Markdown
 const FOOTER_MSG = {
   ru: "\n\n➖➖➖➖➖➖\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
   ro: "\n\n➖➖➖➖➖➖\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
@@ -25,6 +40,7 @@ const FOOTER_MSG = {
 // --- AI SERVICE ---
 async function chatWithAI(messages, modelKey) {
     if (!OPENROUTER_API_KEY) return "NO_KEY";
+    // Здесь мы преобразуем короткий ключ (gemini) в длинный для API (google/gemini-flash...)
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
     
     try {
@@ -59,32 +75,37 @@ async function handleTextMessage(ctx, text) {
     await ctx.sendChatAction('typing');
 
     try {
-        // 1. Получаем данные пользователя
-        let userData = { language: 'ru', model: 'gpt5mini' };
+        // 2. ЗАГРУЗКА ПОЛЬЗОВАТЕЛЯ
+        let userData = { language: 'ru', model: 'gpt5mini' }; // Дефолт
+        
         try {
             if (store.getUser) {
                const u = await store.getUser(userId);
+               // Лог для проверки: что реально загрузилось из базы?
+               console.log(`[DEBUG] User ${userId} loaded data:`, u); 
                if (u) userData = { ...userData, ...u };
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error("[DEBUG] DB Load Error:", e);
+        }
 
         const lang = userData.language || 'ru';
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
-        // 2. УМНЫЙ СИСТЕМНЫЙ ПРОМПТ
-        // Очищаем название модели для промпта (чтобы не было символов вроде / или :)
-        const modelNameRaw = userData.model || "AI Model";
-        const modelNameClean = modelNameRaw.split('/').pop().replace(/[^a-zA-Z0-9 .-]/g, " "); 
-        
+        // 3. ОПРЕДЕЛЕНИЕ ИМЕНИ ДЛЯ ПРОМПТА
+        const modelKey = userData.model || 'gpt5mini';
+        // Берем красивое имя из словаря, либо чистим техническое
+        const niceModelName = MODEL_NAMES[modelKey] || modelKey;
+
         const systemPrompt = {
             role: "system",
-            content: `You are a helpful AI assistant running on the "${modelNameClean}" model. 
+            content: `You are a helpful AI assistant running on the "${niceModelName}" model. 
             
-            IMPORTANT RULES:
-            1. IDENTITY: If the user asks who you are, tell them you are an AI based on ${modelNameClean}. Do NOT say you are from OpenAI unless you actually are (like GPT-4).
-            2. LANGUAGE: DETECT the language of the user's message. ALWAYS reply in the SAME language as the user's message.
-            3. FALLBACK: Only use ${lang === 'ru' ? 'Russian' : lang === 'ro' ? 'Romanian' : 'English'} if the user's input language is impossible to detect.`
+            IMPORTANT INSTRUCTIONS:
+            1. IDENTITY: If the user asks "what model are you?", answer: "I am an AI based on ${niceModelName}".
+            2. LANGUAGE: Reply in the SAME language as the user's message.
+            3. FALLBACK: Only use ${lang === 'ru' ? 'Russian' : lang === 'ro' ? 'Romanian' : 'English'} if you cannot detect the language.`
         };
 
         const messagesToSend = [
@@ -93,7 +114,8 @@ async function handleTextMessage(ctx, text) {
             { role: "user", content: text }
         ];
 
-        const aiResponse = await chatWithAI(messagesToSend, userData.model);
+        // ВАЖНО: Передаем технический ключ (modelKey) для API, но промпт уже содержит красивое имя
+        const aiResponse = await chatWithAI(messagesToSend, modelKey);
 
         if (aiResponse === "NO_KEY") {
              await ctx.reply("⚙️ API Key is missing.");
@@ -105,8 +127,6 @@ async function handleTextMessage(ctx, text) {
         }
 
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
-        
-        // Отправляем БЕЗ Markdown, чтобы спецсимволы в ответе ИИ не ломали бота
         await ctx.reply(aiResponse + footer);
 
         if (store.addToHistory) {
@@ -144,14 +164,14 @@ async function handleModelCommand(ctx) {
     });
 }
 
-async function handleModelCallback(ctx) {
-    // Убрали langCode из аргументов
+// --- CALLBACK (Смена модели) ---
+async function handleModelCallback(ctx, langCode) {
     const data = ctx.callbackQuery.data;
-    const key = data.replace('model_', ''); 
+    const key = data.replace('model_', ''); // Тут получаем ключ, например 'gemini'
     const userId = ctx.from.id.toString();
 
-    // 1. Определяем актуальный язык ИЗ БАЗЫ
-    let currentLang = 'ru';
+    // Определяем язык
+    let currentLang = langCode || 'ru';
     try {
         if (store.getUser) {
             const u = await store.getUser(userId);
@@ -160,6 +180,7 @@ async function handleModelCallback(ctx) {
     } catch (e) {}
 
     if (isProKey(key)) {
+        // Логика премиума (пока отключена)
         const hasPremium = false; 
         if (!hasPremium) {
             const msg = premiumMsg(currentLang);
@@ -168,18 +189,14 @@ async function handleModelCallback(ctx) {
         }
     }
 
-    // 2. Сохраняем модель
+    console.log(`[DEBUG] User ${userId} saving model: ${key}`); // Лог сохранения
     if (store.setUserModel) await store.setUserModel(userId, key);
 
-    // 3. Обновляем галочку
     try {
         const keyboard = gptKeyboard(currentLang, key, () => false);
         await ctx.editMessageReplyMarkup(keyboard); 
-    } catch (e) {
-        // Игнорируем ошибку "message is not modified"
-    }
+    } catch (e) {}
 
-    // 4. Ответ на правильном языке
     const msg = MODEL_CHANGE_MSG[currentLang] || MODEL_CHANGE_MSG.ru;
     await ctx.reply(msg);
     
@@ -192,4 +209,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-            
+    
