@@ -1,6 +1,6 @@
 /**
  * Webhook handler для Telegram бота
- * FIX: Исправлено отображение кнопок моделей (reply_markup)
+ * FIX: Исправлено определение языка и передача данных в меню
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -33,7 +33,14 @@ const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
   try {
-    if (store.updateUser) await store.updateUser(userId, { language: langCode });
+    // 1. Сохраняем язык
+    if (store.updateUser) {
+        await store.updateUser(userId, { language: langCode });
+    } else if (store.setUserLanguage) {
+        await store.setUserLanguage(userId, langCode);
+    }
+    
+    // 2. Устанавливаем модель по умолчанию
     const currentModel = await store.getUserModel(userId);
     if (!currentModel) await store.setUserModel(userId, 'gpt5mini');
   } catch (e) {
@@ -42,10 +49,12 @@ const setupLanguage = async (ctx, langCode) => {
 
   const welcomeText = content.welcome[langCode] || content.welcome.en;
   
+  // Удаляем меню выбора языка
   try {
     await ctx.deleteMessage().catch(() => {}); 
   } catch (e) {}
 
+  // Отправляем приветствие
   try {
       await ctx.reply(welcomeText, {
         reply_markup: {
@@ -104,6 +113,24 @@ bot.on('callback_query', async (ctx) => {
   if (data.startsWith('set_lang_')) return;
 
   try {
+    const userId = ctx.from.id.toString();
+
+    // Получаем данные пользователя (Язык и Модель)
+    // FIX: Теперь мы реально запрашиваем данные из store
+    let userData = { language: 'en', model: 'gpt5mini' }; 
+    try {
+        if (store.getUser) {
+            const stored = await store.getUser(userId);
+            if (stored) userData = { ...userData, ...stored };
+        }
+        // Доп. проверка, если методы разделены
+        const model = await store.getUserModel(userId);
+        if (model) userData.model = model;
+    } catch (e) { console.error(e); }
+
+    const lang = userData.language || 'en'; // Язык теперь динамический
+    const currentModel = userData.model;
+
     // Главное меню
     if (data === 'menu_main') {
       await ctx.editMessageText('📋 *Menu*', {
@@ -126,31 +153,25 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
 
-    // AIChat Меню (ИСПРАВЛЕНО)
+    // AIChat Меню
     if (data === 'menu_gpt') {
-      const userId = ctx.from.id.toString();
-      const currentModel = await store.getUserModel(userId) || 'gpt5mini';
-      
-      // TODO: Брать язык из базы
-      const lang = 'ro'; 
-      const hasPremiumFn = () => false; 
+      const hasPremiumFn = () => false; // Заглушка премиума
 
       const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
       const keyboard = gptKeyboard(lang, currentModel, hasPremiumFn);
 
-      // ВОТ ТУТ БЫЛА ОШИБКА. Теперь мы явно указываем reply_markup
       await ctx.editMessageText(menuText, {
         parse_mode: 'Markdown', 
-        reply_markup: keyboard // <--- Исправлено
+        reply_markup: keyboard
       });
       
       await ctx.answerCbQuery();
       return;
     }
 
-    // Обработка выбора модели
+    // Обработка выбора модели (передаем язык в функцию)
     if (data.startsWith('model_')) {
-      await handleModelCallback(ctx);
+      await handleModelCallback(ctx, lang); // <-- Передаем lang
       return;
     }
 
@@ -166,11 +187,6 @@ bot.on('callback_query', async (ctx) => {
     console.error('Callback Error:', error);
     if (error.description && error.description.includes('message to edit not found')) {
         await ctx.reply('⚠️ Session expired. Type /menu');
-    } else {
-        // Игнорируем ошибку "message is not modified", если юзер жмет одну и ту же кнопку
-        if (!error.description.includes('message is not modified')) {
-             console.log('Error editing message:', error.description);
-        }
     }
   }
 });
@@ -201,4 +217,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-    
+  
