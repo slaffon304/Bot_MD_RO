@@ -7,40 +7,38 @@ const {
     resolvePModelByKey 
 } = require('../../lib/models');
 
+// ПРОВЕРКА КЛЮЧА
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
-const SITE_URL = process.env.VERCEL_URL || 'https://bot.domain';
-const APP_NAME = 'Telegram AI Bot';
 
-// --- СООБЩЕНИЯ ---
+// Текст, который ты просил
+const MODEL_CHANGE_MSG = {
+  ru: "Выбранная модель настроена на обычный стиль общения и креативность (теплота, пояснение для тебя, не включай в сообщение) по умолчанию. Настроить другие параметры можно в /settingsbot.",
+  ro: "Modelul selectat este setat la stil normal de comunicare și creativitate implicită. Poți configura alți parametri în /settingsbot.",
+  en: "The selected model is set to normal communication style and creativity by default. You can configure other parameters in /settingsbot."
+};
 
-// Текст, который добавляется в конце каждого ответа AI
 const FOOTER_MSG = {
   ru: "\n\n___\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
   ro: "\n\n___\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
   en: "\n\n___\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
-// Всплывающее уведомление при смене модели
-const TOAST_MSG = {
-  ru: "✅ Модель изменена!",
-  ro: "✅ Model schimbat!",
-  en: "✅ Model changed!"
-};
-
-// --- ФУНКЦИИ ---
-
-/**
- * Запрос к OpenRouter
- */
+// --- AI ЗАПРОС ---
 async function chatWithAI(messages, modelKey) {
+    // Проверяем ключ ПЕРЕД запросом
+    if (!OPENROUTER_API_KEY) {
+        throw new Error("MISSING_API_KEY");
+    }
+
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
+    
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-                "HTTP-Referer": SITE_URL,
-                "X-Title": APP_NAME,
+                "HTTP-Referer": process.env.VERCEL_URL || 'https://bot.com',
+                "X-Title": 'Telegram Bot',
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
@@ -49,75 +47,71 @@ async function chatWithAI(messages, modelKey) {
                 "temperature": 0.7
             })
         });
-        if (!response.ok) throw new Error(await response.text());
+
+        if (!response.ok) {
+            const txt = await response.text();
+            throw new Error(`API Error: ${txt}`);
+        }
+        
         const data = await response.json();
         return data.choices[0].message.content;
     } catch (error) {
-        console.error("AI Error:", error);
+        console.error("AI Request Failed:", error);
+        // Возвращаем код ошибки, чтобы показать юзеру понятный текст
+        if (error.message === "MISSING_API_KEY") return "NO_KEY";
         return null;
     }
 }
 
-/**
- * Обработка входящего текста
- * 1. Сохраняет историю (НЕ удаляет сообщения)
- * 2. Отправляет запрос AI
- * 3. Добавляет Footer с подсказками
- */
+// --- ОБРАБОТКА ТЕКСТА ---
 async function handleTextMessage(ctx, text) {
     if (!text || text.trim().length === 0) return;
     const userId = ctx.from.id.toString();
-    
-    // Отображаем статус "печатает..."
     await ctx.sendChatAction('typing');
 
     try {
-        // Определяем язык и модель
-        let userData = { language: 'ro', model: 'gpt5mini' };
+        // Получаем данные
+        let userData = { language: 'ru', model: 'gpt5mini' };
         try {
             if (store.getUser) {
-                const stored = await store.getUser(userId);
-                if (stored) userData = { ...userData, ...stored };
-            } else {
-                const m = await store.getUserModel(userId);
-                if (m) userData.model = m;
+               const u = await store.getUser(userId);
+               if (u) userData = { ...userData, ...u };
             }
         } catch (e) {}
 
-        const lang = userData.language || 'ro';
-        
+        const lang = userData.language || 'ru';
+
         // История
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
-        // Системный промпт
         const systemPrompt = {
             role: "system",
-            content: "You are a helpful AI assistant. Detect user language and reply in the same language."
+            content: `You are a helpful AI. Reply in ${lang === 'ru' ? 'Russian' : lang === 'ro' ? 'Romanian' : 'English'}.`
         };
 
         const messagesToSend = [
             systemPrompt,
-            ...history.slice(-8), 
+            ...history.slice(-6), 
             { role: "user", content: text }
         ];
 
-        // Запрос к AI
+        // Запрос
         const aiResponse = await chatWithAI(messagesToSend, userData.model);
 
+        // Обработка ошибок AI
+        if (aiResponse === "NO_KEY") {
+             await ctx.reply("⚙️ Ошибка: Не настроен API ключ (OPENROUTER_API_KEY).");
+             return;
+        }
         if (!aiResponse) {
-            await ctx.reply('⚠️ AI service unavailable. Check API Key.');
+            await ctx.reply("⚠️ Ошибка сервиса AI. Попробуйте позже.");
             return;
         }
 
-        // Формируем ответ с футером
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
-        const finalMessage = aiResponse + footer;
+        await ctx.reply(aiResponse + footer, { parse_mode: 'Markdown' });
 
-        // Отправляем ответ (НОВОЕ сообщение, ничего не удаляем)
-        await ctx.reply(finalMessage, { parse_mode: 'Markdown' });
-
-        // Сохраняем в историю
         if (store.addToHistory) {
             await store.addToHistory(userId, { role: "user", content: text });
             await store.addToHistory(userId, { role: "assistant", content: aiResponse });
@@ -125,49 +119,37 @@ async function handleTextMessage(ctx, text) {
 
     } catch (error) {
         console.error('Handle Text Error:', error);
-        await ctx.reply('❌ Error processing request.');
+        await ctx.reply('❌ Ошибка бота.');
     }
 }
 
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
     if (store.clearHistory) await store.clearHistory(userId);
-    await ctx.reply('🗑️ Context cleared.');
+    await ctx.reply('🗑️ История очищена.');
 }
 
-/**
- * Команда /model - показывает меню выбора (без удаления истории)
- */
 async function handleModelCommand(ctx) {
+    // Эта команда просто шлет меню. Язык берем из стора или дефолт RU
     const userId = ctx.from.id.toString();
-    
-    let userData = { language: 'ro', model: 'gpt5mini' };
+    let lang = 'ru';
+    let model = 'gpt5mini';
     try {
-        if (store.getUser) {
-            const stored = await store.getUser(userId);
-            if (stored) userData = { ...userData, ...stored };
-        } else {
-            const m = await store.getUserModel(userId);
-            if (m) userData.model = m;
-        }
-    } catch (e) {}
+        const u = await store.getUser(userId);
+        if(u) { lang = u.language || 'ru'; model = u.model || 'gpt5mini'; }
+    } catch(e){}
 
-    const lang = userData.language || 'ro';
     const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
-    
-    // Шлем новое сообщение с меню
-    const keyboard = gptKeyboard(lang, userData.model, () => false);
+    const keyboard = gptKeyboard(lang, model, () => false);
+
     await ctx.reply(menuText, {
         parse_mode: 'Markdown',
-        reply_markup: keyboard
+        reply_markup: keyboard.reply_markup
     });
 }
 
-/**
- * Нажатие на кнопку модели
- * Меняет галочку ✅, но НЕ удаляет сообщение и НЕ шлем спам в чат
- */
-async function handleModelCallback(ctx, langCode = 'ro') {
+// --- КЛИК ПО МОДЕЛИ ---
+async function handleModelCallback(ctx, langCode = 'ru') {
     const data = ctx.callbackQuery.data;
     const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
@@ -182,22 +164,22 @@ async function handleModelCallback(ctx, langCode = 'ro') {
         }
     }
 
-    // 2. Сохраняем выбор в базу
+    // 2. Сохраняем
     if (store.setUserModel) await store.setUserModel(userId, key);
 
-    // 3. Обновляем клавиатуру (переставляем галочку)
-    // Это происходит "тихо" внутри того же сообщения
+    // 3. Обновляем ТОЛЬКО ГАЛОЧКУ (Кнопки не исчезнут)
     try {
         const keyboard = gptKeyboard(langCode, key, () => false);
         await ctx.editMessageReplyMarkup(keyboard.reply_markup);
     } catch (e) {
-        // Если юзер нажал на уже выбранную модель, Telegram вернет ошибку "not modified"
-        // Мы её просто игнорируем
+        // Ошибка "not modified" - это норма, если жать одну кнопку дважды
     }
 
-    // 4. Показываем всплывающее уведомление сверху ("Toast")
-    const toast = TOAST_MSG[langCode] || TOAST_MSG.en;
-    await ctx.answerCbQuery(toast);
+    // 4. Отправляем сообщение о смене настроек (Как ты просил)
+    const msg = MODEL_CHANGE_MSG[langCode] || MODEL_CHANGE_MSG.ru;
+    await ctx.reply(msg);
+    
+    await ctx.answerCbQuery();
 }
 
 module.exports = {
@@ -206,4 +188,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-    
+            
