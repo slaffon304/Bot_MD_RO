@@ -15,14 +15,14 @@ const MODEL_CHANGE_MSG = {
   en: "The selected model is set to normal communication style and creativity by default. You can configure other parameters in /settingsbot."
 };
 
-// ИСПРАВЛЕНО: Заменил ___ на безопасный разделитель, чтобы не ломать Markdown
+// Используем безопасный разделитель, чтобы не ломать Markdown
 const FOOTER_MSG = {
   ru: "\n\n➖➖➖➖➖➖\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
   ro: "\n\n➖➖➖➖➖➖\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
   en: "\n\n➖➖➖➖➖➖\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
-// --- AI ---
+// --- AI SERVICE ---
 async function chatWithAI(messages, modelKey) {
     if (!OPENROUTER_API_KEY) return "NO_KEY";
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
@@ -52,13 +52,14 @@ async function chatWithAI(messages, modelKey) {
     }
 }
 
-// --- TEXT ---
+// --- TEXT HANDLER ---
 async function handleTextMessage(ctx, text) {
     if (!text || text.trim().length === 0) return;
     const userId = ctx.from.id.toString();
     await ctx.sendChatAction('typing');
 
     try {
+        // 1. Получаем данные пользователя
         let userData = { language: 'ru', model: 'gpt5mini' };
         try {
             if (store.getUser) {
@@ -71,9 +72,19 @@ async function handleTextMessage(ctx, text) {
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
+        // 2. УМНЫЙ СИСТЕМНЫЙ ПРОМПТ
+        // Очищаем название модели для промпта (чтобы не было символов вроде / или :)
+        const modelNameRaw = userData.model || "AI Model";
+        const modelNameClean = modelNameRaw.split('/').pop().replace(/[^a-zA-Z0-9 .-]/g, " "); 
+        
         const systemPrompt = {
             role: "system",
-            content: `You are a helpful AI. Reply in ${lang === 'ru' ? 'Russian' : lang === 'ro' ? 'Romanian' : 'English'}.`
+            content: `You are a helpful AI assistant running on the "${modelNameClean}" model. 
+            
+            IMPORTANT RULES:
+            1. IDENTITY: If the user asks who you are, tell them you are an AI based on ${modelNameClean}. Do NOT say you are from OpenAI unless you actually are (like GPT-4).
+            2. LANGUAGE: DETECT the language of the user's message. ALWAYS reply in the SAME language as the user's message.
+            3. FALLBACK: Only use ${lang === 'ru' ? 'Russian' : lang === 'ro' ? 'Romanian' : 'English'} if the user's input language is impossible to detect.`
         };
 
         const messagesToSend = [
@@ -95,8 +106,7 @@ async function handleTextMessage(ctx, text) {
 
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         
-        // ИСПРАВЛЕНО: Убрал { parse_mode: 'Markdown' }. 
-        // Это предотвращает краш бота, если ИИ пришлет спецсимволы (*, _, [ и т.д.)
+        // Отправляем БЕЗ Markdown, чтобы спецсимволы в ответе ИИ не ломали бота
         await ctx.reply(aiResponse + footer);
 
         if (store.addToHistory) {
@@ -134,28 +144,43 @@ async function handleModelCommand(ctx) {
     });
 }
 
-async function handleModelCallback(ctx, langCode = 'ru') {
+async function handleModelCallback(ctx) {
+    // Убрали langCode из аргументов
     const data = ctx.callbackQuery.data;
     const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
 
+    // 1. Определяем актуальный язык ИЗ БАЗЫ
+    let currentLang = 'ru';
+    try {
+        if (store.getUser) {
+            const u = await store.getUser(userId);
+            if (u && u.language) currentLang = u.language;
+        }
+    } catch (e) {}
+
     if (isProKey(key)) {
         const hasPremium = false; 
         if (!hasPremium) {
-            const msg = premiumMsg(langCode);
+            const msg = premiumMsg(currentLang);
             await ctx.answerCbQuery(msg, { show_alert: true });
             return;
         }
     }
 
+    // 2. Сохраняем модель
     if (store.setUserModel) await store.setUserModel(userId, key);
 
+    // 3. Обновляем галочку
     try {
-        const keyboard = gptKeyboard(langCode, key, () => false);
+        const keyboard = gptKeyboard(currentLang, key, () => false);
         await ctx.editMessageReplyMarkup(keyboard); 
-    } catch (e) {}
+    } catch (e) {
+        // Игнорируем ошибку "message is not modified"
+    }
 
-    const msg = MODEL_CHANGE_MSG[langCode] || MODEL_CHANGE_MSG.ru;
+    // 4. Ответ на правильном языке
+    const msg = MODEL_CHANGE_MSG[currentLang] || MODEL_CHANGE_MSG.ru;
     await ctx.reply(msg);
     
     await ctx.answerCbQuery();
@@ -167,4 +192,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-    
+            
