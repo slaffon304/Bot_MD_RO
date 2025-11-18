@@ -163,6 +163,45 @@ bot.on('callback_query', async (ctx) => {
         return;
     }
 
+    if (    // В начале файла добавь импорт, если его нет:
+    const { gptKeyboard } = require('../lib/models'); 
+
+    // ... внутри bot.on('callback_query') ...
+
+    if (data === 'menu_gpt') {
+      const userId = ctx.from.id.toString();
+      
+      // 1. Получаем данные пользователя (язык и модель)
+      let userData = { language: 'ro', model: 'gpt5mini' }; // Дефолт
+      try {
+        if (store.getUser) {
+           const stored = await store.getUser(userId);
+           if (stored) userData = { ...userData, ...stored };
+        }
+      } catch (e) { console.error(e); }
+
+      const lang = userData.language || 'ro';
+      const currentModel = userData.model || 'gpt5mini';
+
+      // 2. Проверка премиума (заглушка, пока реализуй как false или подключи базу)
+      const hasPremium = false; // Поставь true для теста, если хочешь видеть все открытым
+      const hasPremiumFn = () => hasPremium; 
+
+      // 3. Отправляем меню с моделями
+      // Используем editMessageText, чтобы заменить главное меню на меню GPT
+      await ctx.editMessageText(content.gpt_menu[lang], {
+        parse_mode: 'Markdown',
+        ...gptKeyboard(lang, currentModel, hasPremiumFn)
+      });
+      
+      await ctx.answerCbQuery();
+      return;
+    }
+) {
+        await handleModelCommand(ctx);
+        return;
+    }
+
     await ctx.answerCbQuery();
 
   } catch (error) {
