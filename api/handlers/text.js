@@ -9,8 +9,7 @@ const {
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
 
-// 1. СЛОВАРЬ ИМЕН (Добавь сюда точные ключи своих кнопок)
-// Ключ слева должен совпадать с тем, что прописано в кнопках (callback_data)
+// СЛОВАРЬ ИМЕН МОДЕЛЕЙ
 const MODEL_NAMES = {
     'gpt5mini': 'GPT-5 Mini',
     'gpt-4o-mini': 'GPT-4o Mini',
@@ -20,7 +19,6 @@ const MODEL_NAMES = {
     'deepseek-r1': 'DeepSeek R1',
     'gemini-2.5-flash': 'Gemini 2.5 Flash',
     'gemini-2.5-pro': 'Gemini 2.5 Pro',
-    // Если твои ключи отличаются (например, просто 'gemini'), добавь их сюда:
     'gemini': 'Gemini 2.5',
     'deepseek': 'DeepSeek V3'
 };
@@ -40,7 +38,6 @@ const FOOTER_MSG = {
 // --- AI SERVICE ---
 async function chatWithAI(messages, modelKey) {
     if (!OPENROUTER_API_KEY) return "NO_KEY";
-    // Здесь мы преобразуем короткий ключ (gemini) в длинный для API (google/gemini-flash...)
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
     
     try {
@@ -75,27 +72,33 @@ async function handleTextMessage(ctx, text) {
     await ctx.sendChatAction('typing');
 
     try {
-        // 2. ЗАГРУЗКА ПОЛЬЗОВАТЕЛЯ
-        let userData = { language: 'ru', model: 'gpt5mini' }; // Дефолт
-        
+        // 1. ЗАГРУЗКА ДАННЫХ (ИСПРАВЛЕНО ПОД ТВОЙ STORE.JS)
+        // Мы загружаем модель и язык отдельными функциями
+        let savedModel = null;
+        let savedLang = null;
+
         try {
-            if (store.getUser) {
-               const u = await store.getUser(userId);
-               // Лог для проверки: что реально загрузилось из базы?
-               console.log(`[DEBUG] User ${userId} loaded data:`, u); 
-               if (u) userData = { ...userData, ...u };
-            }
+            if (store.getUserModel) savedModel = await store.getUserModel(userId);
+            if (store.getUserLang) savedLang = await store.getUserLang(userId);
+            
+            console.log(`[DEBUG] User ${userId} loaded: Model=${savedModel}, Lang=${savedLang}`);
         } catch (e) {
             console.error("[DEBUG] DB Load Error:", e);
         }
 
-        const lang = userData.language || 'ru';
+        const userData = {
+            model: savedModel || 'gpt5mini',
+            language: savedLang || 'ru'
+        };
+
+        const lang = userData.language;
+        
+        // Получаем историю
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
-        // 3. ОПРЕДЕЛЕНИЕ ИМЕНИ ДЛЯ ПРОМПТА
-        const modelKey = userData.model || 'gpt5mini';
-        // Берем красивое имя из словаря, либо чистим техническое
+        // 2. ОПРЕДЕЛЕНИЕ ИМЕНИ
+        const modelKey = userData.model;
         const niceModelName = MODEL_NAMES[modelKey] || modelKey;
 
         const systemPrompt = {
@@ -114,8 +117,7 @@ async function handleTextMessage(ctx, text) {
             { role: "user", content: text }
         ];
 
-        // ВАЖНО: Передаем технический ключ (modelKey) для API, но промпт уже содержит красивое имя
-        const aiResponse = await chatWithAI(messagesToSend, modelKey);
+        const aiResponse = await chatWithAI(messagesToSend, userData.model);
 
         if (aiResponse === "NO_KEY") {
              await ctx.reply("⚙️ API Key is missing.");
@@ -129,9 +131,11 @@ async function handleTextMessage(ctx, text) {
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        if (store.addToHistory) {
-            await store.addToHistory(userId, { role: "user", content: text });
-            await store.addToHistory(userId, { role: "assistant", content: aiResponse });
+        // 3. СОХРАНЕНИЕ ИСТОРИИ (ИСПРАВЛЕНО ПОД ТВОЙ STORE.JS)
+        // У тебя функция называется pushMessage, а не addToHistory
+        if (store.pushMessage) {
+            await store.pushMessage(userId, { role: "user", content: text });
+            await store.pushMessage(userId, { role: "assistant", content: aiResponse });
         }
 
     } catch (error) {
@@ -150,9 +154,16 @@ async function handleModelCommand(ctx) {
     const userId = ctx.from.id.toString();
     let lang = 'ru';
     let model = 'gpt5mini';
+    
     try {
-        const u = await store.getUser(userId);
-        if(u) { lang = u.language || 'ru'; model = u.model || 'gpt5mini'; }
+        if (store.getUserLang) {
+            const l = await store.getUserLang(userId);
+            if (l) lang = l;
+        }
+        if (store.getUserModel) {
+            const m = await store.getUserModel(userId);
+            if (m) model = m;
+        }
     } catch(e){}
 
     const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
@@ -164,23 +175,23 @@ async function handleModelCommand(ctx) {
     });
 }
 
-// --- CALLBACK (Смена модели) ---
 async function handleModelCallback(ctx, langCode) {
     const data = ctx.callbackQuery.data;
-    const key = data.replace('model_', ''); // Тут получаем ключ, например 'gemini'
+    const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
 
-    // Определяем язык
-    let currentLang = langCode || 'ru';
+    // Ищем язык в базе
+    let currentLang = langCode;
     try {
-        if (store.getUser) {
-            const u = await store.getUser(userId);
-            if (u && u.language) currentLang = u.language;
+        if (store.getUserLang) {
+            const l = await store.getUserLang(userId);
+            if (l) currentLang = l;
         }
     } catch (e) {}
+    
+    if (!currentLang) currentLang = 'ru';
 
     if (isProKey(key)) {
-        // Логика премиума (пока отключена)
         const hasPremium = false; 
         if (!hasPremium) {
             const msg = premiumMsg(currentLang);
@@ -189,7 +200,7 @@ async function handleModelCallback(ctx, langCode) {
         }
     }
 
-    console.log(`[DEBUG] User ${userId} saving model: ${key}`); // Лог сохранения
+    console.log(`[DEBUG] User ${userId} saving model: ${key}`);
     if (store.setUserModel) await store.setUserModel(userId, key);
 
     try {
@@ -209,4 +220,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-    
+                
