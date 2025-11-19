@@ -1,6 +1,6 @@
 /**
  * Webhook handler
- * FIX: Добавлена команда /debug
+ * FIX: Добавлена поддержка ФОТО и ДОКУМЕНТОВ
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -38,8 +38,9 @@ const setupLanguage = async (ctx, langCode) => {
     let currentModel = null;
     if (store.getUserModel) currentModel = await store.getUserModel(userId);
     
+    // Дефолтная модель теперь DeepSeek (самая умная бесплатная)
     if (!currentModel && store.setUserModel) {
-        await store.setUserModel(userId, 'gpt5mini');
+        await store.setUserModel(userId, 'deepseek');
     }
   } catch (e) {
       console.error("Setup Lang DB Error:", e);
@@ -96,7 +97,7 @@ bot.on('callback_query', async (ctx) => {
     // 1. AIChat Menu
     if (data.startsWith('menu_gpt')) {
       const lang = data.split('_')[2] || 'ru'; 
-      let currentModel = 'gpt5mini';
+      let currentModel = 'deepseek'; // Default
       try {
           if (store.getUserModel) {
             const m = await store.getUserModel(userId);
@@ -151,14 +152,19 @@ bot.command('model', handleModelCommand);
 bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
 bot.command('clear', handleClearCommand);
 
-// ДОБАВЛЕНО: Явно разрешаем команду /debug
 bot.command('debug', async (ctx) => {
-    // Передаем её в текстовый обработчик, где прописана логика отладки
     await handleTextMessage(ctx, '/debug');
 });
 
+// --- ОБРАБОТКА КАРТИНОК И ДОКУМЕНТОВ ---
+bot.on(['photo', 'document'], async (ctx) => {
+    // Передаем caption (подпись к фото) как текст, 
+    // но сам факт наличия фото ctx.message.photo обработаем внутри handleTextMessage
+    const text = ctx.message.caption || ''; 
+    await handleTextMessage(ctx, text);
+});
+
 bot.on('text', async (ctx) => {
-  // Если это команда (начинается с /), но мы её не знаем - игнорируем
   if (ctx.message.text.startsWith('/')) return;
   await handleTextMessage(ctx, ctx.message.text);
 });
@@ -178,3 +184,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
+  
