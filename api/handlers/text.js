@@ -28,7 +28,6 @@ const FOOTER_MSG = {
   en: "\n\n➖➖➖➖➖➖\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
-// --- AI SERVICE ---
 async function chatWithAI(messages, modelKey) {
     if (!OPENROUTER_API_KEY) return "NO_KEY";
     const pmodel = resolvePModelByKey(modelKey) || 'openai/gpt-4o-mini';
@@ -62,36 +61,40 @@ async function chatWithAI(messages, modelKey) {
 async function handleTextMessage(ctx, text) {
     if (!text || text.trim().length === 0) return;
     const userId = ctx.from.id.toString();
+
+    // --- DEBUG COMMAND ---
+    if (text === '/debug') {
+        if (store.getDebugData) {
+            const debugInfo = await store.getDebugData(userId);
+            await ctx.reply(`🐞 DEBUG INFO:\n\n${debugInfo}`);
+        } else {
+            await ctx.reply('Debug function not found in store.');
+        }
+        return;
+    }
+    // ---------------------
+
     await ctx.sendChatAction('typing');
 
     try {
-        // 1. Загружаем настройки
+        // 1. Load User Data
         let savedModel = 'gpt5mini';
         let savedLang = 'ru';
-
         try {
-            if (store.getUserModel && store.getUserLang) {
-                const [m, l] = await Promise.all([
-                    store.getUserModel(userId),
-                    store.getUserLang(userId)
-                ]);
-                if (m) savedModel = m;
-                if (l) savedLang = l;
-            }
+            if (store.getUserModel) savedModel = await store.getUserModel(userId) || 'gpt5mini';
+            if (store.getUserLang) savedLang = await store.getUserLang(userId) || 'ru';
         } catch (e) {}
 
         const userData = { model: savedModel, language: savedLang };
         const lang = userData.language;
         
-        // 2. ЗАГРУЖАЕМ ИСТОРИЮ (ВАЖНО!)
+        // 2. Load History
         let history = [];
         if (store.getHistory) {
             history = await store.getHistory(userId) || [];
-            // Лог для отладки: видим в Vercel, сколько сообщений помнит бот
-            console.log(`[DEBUG] User ${userId} history length: ${history.length}`);
         }
 
-        // 3. МОЩНЫЙ СИСТЕМНЫЙ ПРОМПТ
+        // 3. System Prompt
         const modelKey = userData.model;
         const niceModelName = MODEL_NAMES[modelKey] || modelKey;
 
@@ -99,17 +102,11 @@ async function handleTextMessage(ctx, text) {
             role: "system",
             content: `You are a helpful AI assistant running on the "${niceModelName}" model.
             
-            MEMORY INSTRUCTIONS:
-            The messages provided above this system prompt are the CONVERSATION HISTORY.
-            You MUST use them to answer questions about previous messages.
-            If the user asks "what did I just say?", look at the history and answer.
-            
-            LANGUAGE:
-            Reply in the SAME language as the user's message.`
+            IMPORTANT: The messages above are the CONVERSATION HISTORY with the user. 
+            Always use this context to answer follow-up questions.
+            Reply in the SAME language as the user.`
         };
 
-        // Порядок: Система -> История -> Новый вопрос
-        // Важно: Некоторые модели лучше понимают, когда System идет первым
         const messagesToSend = [
             systemPrompt,
             ...history, 
@@ -118,19 +115,13 @@ async function handleTextMessage(ctx, text) {
 
         const aiResponse = await chatWithAI(messagesToSend, userData.model);
 
-        if (aiResponse === "NO_KEY") {
-             await ctx.reply("⚙️ API Key is missing.");
-             return;
-        }
-        if (!aiResponse) {
-            await ctx.reply("⚠️ AI Service Error.");
-            return;
-        }
+        if (aiResponse === "NO_KEY") { await ctx.reply("⚙️ API Key missing."); return; }
+        if (!aiResponse) { await ctx.reply("⚠️ AI Error."); return; }
 
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        // 4. СОХРАНЯЕМ (User + Assistant)
+        // 4. Save History
         if (store.updateConversation) {
             await store.updateConversation(
                 userId, 
@@ -148,7 +139,7 @@ async function handleTextMessage(ctx, text) {
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
     if (store.clearHistory) await store.clearHistory(userId);
-    await ctx.reply('🗑️ History cleared / История очищена.');
+    await ctx.reply('🗑️ History cleared.');
 }
 
 async function handleModelCommand(ctx) {
@@ -156,14 +147,8 @@ async function handleModelCommand(ctx) {
     let lang = 'ru';
     let model = 'gpt5mini';
     try {
-        if (store.getUserLang) {
-            const l = await store.getUserLang(userId);
-            if (l) lang = l;
-        }
-        if (store.getUserModel) {
-            const m = await store.getUserModel(userId);
-            if (m) model = m;
-        }
+        if (store.getUserLang) lang = await store.getUserLang(userId) || 'ru';
+        if (store.getUserModel) model = await store.getUserModel(userId) || 'gpt5mini';
     } catch(e){}
 
     const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
@@ -176,13 +161,10 @@ async function handleModelCallback(ctx, langCode) {
     const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
 
-    let currentLang = langCode;
+    let currentLang = langCode || 'ru';
     try {
-        if (!currentLang && store.getUserLang) {
-            currentLang = await store.getUserLang(userId);
-        }
+        if (!langCode && store.getUserLang) currentLang = await store.getUserLang(userId) || 'ru';
     } catch (e) {}
-    if (!currentLang) currentLang = 'ru';
 
     if (isProKey(key)) {
         const hasPremium = false; 
@@ -193,9 +175,8 @@ async function handleModelCallback(ctx, langCode) {
         }
     }
 
-    // Очищаем историю при смене модели (чтобы не было путаницы)
+    // Reset history on model change
     if (store.clearHistory) await store.clearHistory(userId);
-
     if (store.setUserModel) await store.setUserModel(userId, key);
 
     try {
@@ -204,14 +185,11 @@ async function handleModelCallback(ctx, langCode) {
     } catch (e) {}
 
     const niceName = MODEL_NAMES[key] || key;
-    let replyText = (currentLang === 'ru') 
+    const replyText = (currentLang === 'ru') 
         ? `Вы выбрали модель ${niceName}. История диалога сброшена.` 
         : `You selected model ${niceName}. History reset.`;
-        
-    if(currentLang === 'ro') replyText = `Ai selectat modelul ${niceName}. Istoricul resetat.`;
 
-    replyText += "\n/settingsbot";
-    await ctx.reply(replyText);
+    await ctx.reply(replyText + "\n/settingsbot");
     await ctx.answerCbQuery();
 }
 
@@ -221,4 +199,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-        
+    
