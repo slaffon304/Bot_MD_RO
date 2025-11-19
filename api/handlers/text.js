@@ -1,9 +1,10 @@
 const store = require('../../lib/store');
 const content = require('../../content.json');
 const { 
-    GPT_MODELS, // Подключаем наш новый список
+    GPT_MODELS, 
     isProKey, 
-    isVisionModel, // Новая функция проверки зрения
+    isVisionModel, 
+    getModelForTask, // Новая функция для выбора спец-моделей
     gptKeyboard, 
     premiumMsg, 
     resolvePModelByKey 
@@ -11,14 +12,13 @@ const {
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY; 
 
-// Безопасный разделитель
 const FOOTER_MSG = {
   ru: "\n\n➖➖➖➖➖➖\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
   ro: "\n\n➖➖➖➖➖➖\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
   en: "\n\n➖➖➖➖➖➖\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
-// Вспомогательная: Получить красивое имя модели
+// Получить красивое имя модели
 function getModelNiceName(key, lang = 'ru') {
     const m = GPT_MODELS.find(x => x.key === key);
     if (!m) return key;
@@ -28,7 +28,6 @@ function getModelNiceName(key, lang = 'ru') {
 // --- AI SERVICE ---
 async function chatWithAI(messages, modelKey) {
     if (!OPENROUTER_API_KEY) return "NO_KEY";
-    // Получаем реальный ID (например, openai/gpt-5-image-mini)
     const pmodel = resolvePModelByKey(modelKey) || 'deepseek/deepseek-chat';
     
     try {
@@ -43,9 +42,7 @@ async function chatWithAI(messages, modelKey) {
             body: JSON.stringify({
                 "model": pmodel,
                 "messages": messages,
-                // Температура 0.7 хороша для креатива, но для кода лучше ниже.
-                // Пока оставляем универсальную.
-                "temperature": 0.7 
+                "temperature": 0.7
             })
         });
 
@@ -60,11 +57,19 @@ async function chatWithAI(messages, modelKey) {
 
 // --- MAIN HANDLER ---
 async function handleTextMessage(ctx, textInput) {
-    // Проверка: есть ли текст или подпись, или это просто картинка без текста
-    const text = textInput || (ctx.message?.caption) || '';
+    // Проверяем наличие контента
+    const message = ctx.message;
+    const caption = message?.caption || '';
+    const text = textInput || caption || ''; // Текст может прийти аргументом или быть подписью
     
-    // Если текста нет и картинки нет - выходим
-    if (!text && !ctx.message?.photo && !ctx.message?.document) return;
+    // Флаги типов контента
+    const isPhoto = message?.photo;
+    const isVoice = message?.voice || message?.audio;
+    const isVideo = message?.video || message?.video_note;
+    const isDoc = message?.document;
+
+    // Если вообще пусто - выходим
+    if (!text && !isPhoto && !isVoice && !isVideo && !isDoc) return;
     
     const userId = ctx.from.id.toString();
 
@@ -82,8 +87,8 @@ async function handleTextMessage(ctx, textInput) {
     await ctx.sendChatAction('typing');
 
     try {
-        // 1. Загружаем данные юзера
-        let savedModel = 'deepseek'; // Новый дефолт
+        // 1. Загружаем данные пользователя
+        let savedModel = 'deepseek'; 
         let savedLang = 'ru';
         
         try {
@@ -100,60 +105,92 @@ async function handleTextMessage(ctx, textInput) {
         const userData = { model: savedModel, language: savedLang };
         const lang = userData.language;
 
-        // 2. ОБРАБОТКА КАРТИНКИ (VISION LOGIC)
-        let photoUrl = null;
+        // 2. ДОСТАЕМ ФАЙЛ (ЕСЛИ ЕСТЬ)
+        let fileUrl = null;
+        let fileType = 'text'; // text, image, audio, video
         
-        // Проверяем, прислал ли юзер фото
-        if (ctx.message && ctx.message.photo) {
-            // Берем самое большое фото из массива
-            const photos = ctx.message.photo;
-            const fileId = photos[photos.length - 1].file_id;
-            try {
-                const url = await ctx.telegram.getFileLink(fileId);
-                photoUrl = url.href;
-                console.log(`[Vision] Got photo URL for user ${userId}`);
-            } catch (e) {
-                console.error("GetFileLink Error:", e);
+        try {
+            let fileId = null;
+            
+            if (isPhoto) {
+                fileId = message.photo[message.photo.length - 1].file_id;
+                fileType = 'image';
+            } else if (isVoice) {
+                fileId = (message.voice || message.audio).file_id;
+                fileType = 'audio';
+            } else if (isVideo) {
+                fileId = (message.video || message.video_note).file_id;
+                fileType = 'video';
+            } else if (isDoc) {
+                fileId = message.document.file_id;
+                fileType = 'doc';
             }
+
+            if (fileId) {
+                const urlObj = await ctx.telegram.getFileLink(fileId);
+                fileUrl = urlObj.href;
+                console.log(`[Media] Got ${fileType} URL for user ${userId}`);
+            }
+        } catch (e) {
+            console.error("FileLink Error:", e);
         }
 
         // 3. УМНЫЙ МАРШРУТИЗАТОР (AUTO-SWITCH)
         let modelToUse = userData.model;
-        
-        // Если есть фото, но текущая модель СЛЕПАЯ (vision: false)
-        if (photoUrl && !isVisionModel(modelToUse)) {
-            console.log(`[Auto-Switch] Model ${modelToUse} is blind. Switching to Gemini Flash.`);
-            modelToUse = 'gemini_flash'; // Подменяем на бесплатную Gemini
+        let overrideReason = null;
+
+        // Логика переключения задач
+        if (fileType === 'audio') {
+            modelToUse = getModelForTask('audio_input') || 'gemini_flash';
+            overrideReason = "Audio Processing";
+        } else if (fileType === 'video') {
+            modelToUse = getModelForTask('video_input') || 'gemini_flash';
+            overrideReason = "Video Analysis";
+        } else if (fileType === 'doc') {
+            modelToUse = getModelForTask('doc_heavy') || 'gemini_lite';
+            overrideReason = "Document Analysis";
+        } else if (fileType === 'image') {
+            // Если это фото, и текущая модель слепая -> переключаем на зрячую
+            if (!isVisionModel(modelToUse)) {
+                modelToUse = 'gemini_flash'; // Бесплатная смотрелка
+                overrideReason = "Vision Fallback";
+            }
         }
 
-        // 4. Загружаем историю
+        if (overrideReason) {
+            console.log(`[Router] Switching to ${modelToUse} for ${overrideReason}`);
+        }
+
+        // 4. История
         let history = [];
         if (store.getHistory) {
             history = await store.getHistory(userId) || [];
         }
 
-        // 5. Формируем Системный Промпт
+        // 5. Системный Промпт
         const niceModelName = getModelNiceName(modelToUse, lang);
         const systemPrompt = {
             role: "system",
             content: `You are a helpful AI assistant running on the "${niceModelName}" model.
             
-            MEMORY: Use the conversation history above to answer context questions.
-            LANGUAGE: Reply in the SAME language as the user's message.
-            VISION: If an image is provided, describe it or answer questions about it.`
+            CONTEXT: Use conversation history.
+            LANGUAGE: Reply in the SAME language as the user.
+            TASK: If a file (image/audio/doc) is provided, analyze it.`
         };
 
-        // 6. Формируем Сообщение Юзера
+        // 6. Формирование сообщения (Multimodal Payload)
         let userMessageContent;
 
-        if (photoUrl) {
-            // Формат OpenRouter для картинок (Multimodal)
+        if (fileUrl) {
+            // Для большинства мультимодальных моделей OpenRouter формат такой:
+            // (Для Gemini/GPT-4o это работает, для других может требоваться просто текст с URL)
             userMessageContent = [
-                { type: "text", text: text || (lang === 'ru' ? "Что на картинке?" : "Describe this image") },
-                { type: "image_url", image_url: { url: photoUrl } }
+                { type: "text", text: text || (lang === 'ru' ? "Проанализируй этот файл." : "Analyze this file.") },
+                { type: "image_url", image_url: { url: fileUrl } } 
+                // Прим: OpenRouter часто принимает audio/video тоже через image_url или content url, 
+                // но для надежности лучше использовать модели, которые точно это умеют (Gemini).
             ];
         } else {
-            // Обычный текст
             userMessageContent = text;
         }
 
@@ -163,7 +200,7 @@ async function handleTextMessage(ctx, textInput) {
             { role: "user", content: userMessageContent }
         ];
 
-        // 7. Отправляем запрос
+        // 7. Отправка
         const aiResponse = await chatWithAI(messagesToSend, modelToUse);
 
         if (aiResponse === "NO_KEY") { await ctx.reply("⚙️ API Key missing."); return; }
@@ -172,9 +209,9 @@ async function handleTextMessage(ctx, textInput) {
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        // 8. Сохраняем в историю (только текст, чтобы не ломать базу ссылками)
+        // 8. Сохранение
         if (store.updateConversation) {
-            const historyText = photoUrl ? `[Photo] ${text}` : text;
+            const historyText = fileUrl ? `[${fileType.toUpperCase()}] ${text}` : text;
             await store.updateConversation(
                 userId, 
                 { role: "user", content: historyText }, 
@@ -188,7 +225,7 @@ async function handleTextMessage(ctx, textInput) {
     }
 }
 
-// --- КОМАНДЫ (Остаются без изменений) ---
+// --- КОМАНДЫ ---
 
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
@@ -199,7 +236,7 @@ async function handleClearCommand(ctx) {
 async function handleModelCommand(ctx) {
     const userId = ctx.from.id.toString();
     let lang = 'ru';
-    let model = 'deepseek'; // Новый дефолт
+    let model = 'deepseek'; // Default
     try {
         if (store.getUserLang) lang = await store.getUserLang(userId) || 'ru';
         if (store.getUserModel) model = await store.getUserModel(userId) || 'deepseek';
@@ -238,9 +275,8 @@ async function handleModelCallback(ctx, langCode) {
     } catch (e) {}
 
     const niceName = getModelNiceName(key, currentLang);
-    
-    let replyText = (currentLang === 'ru') 
-        ? `Вы выбрали модель ${niceName}. История диалога сброшена.` 
+    const replyText = (currentLang === 'ru') 
+        ? `Вы выбрали модель ${niceName}. История сброшена.` 
         : `You selected model ${niceName}. History reset.`;
 
     await ctx.reply(replyText + "\n/settingsbot");
@@ -253,4 +289,3 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-                
