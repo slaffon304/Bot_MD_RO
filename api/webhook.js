@@ -1,6 +1,6 @@
 /**
  * Webhook handler
- * FIX: Добавлена поддержка ФОТО и ДОКУМЕНТОВ
+ * UPD: Добавлена поддержка Voice, Audio и Video для новых моделей
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -38,7 +38,7 @@ const setupLanguage = async (ctx, langCode) => {
     let currentModel = null;
     if (store.getUserModel) currentModel = await store.getUserModel(userId);
     
-    // Дефолтная модель теперь DeepSeek (самая умная бесплатная)
+    // Дефолт: DeepSeek (самая умная бесплатная)
     if (!currentModel && store.setUserModel) {
         await store.setUserModel(userId, 'deepseek');
     }
@@ -156,11 +156,12 @@ bot.command('debug', async (ctx) => {
     await handleTextMessage(ctx, '/debug');
 });
 
-// --- ОБРАБОТКА КАРТИНОК И ДОКУМЕНТОВ ---
-bot.on(['photo', 'document'], async (ctx) => {
-    // Передаем caption (подпись к фото) как текст, 
-    // но сам факт наличия фото ctx.message.photo обработаем внутри handleTextMessage
+// --- ОБРАБОТКА ВСЕХ ФАЙЛОВ (Media Router) ---
+// Добавили voice, audio, video
+bot.on(['photo', 'document', 'voice', 'audio', 'video'], async (ctx) => {
+    // Передаем caption (подпись) или пустую строку, если это голосовое
     const text = ctx.message.caption || ''; 
+    // Весь объект сообщения (ctx) уйдет в text.js, где мы достанем ссылки на файлы
     await handleTextMessage(ctx, text);
 });
 
@@ -184,4 +185,3 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-  
