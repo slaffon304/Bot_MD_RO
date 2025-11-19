@@ -1,11 +1,11 @@
 /**
  * Webhook handler
- * FIX: Полная совместимость с require и новым store.js
+ * FIX: Добавлена команда /debug
  */
 
 const { Telegraf, Markup } = require('telegraf');
 const content = require('../content.json');
-const store = require('../lib/store'); // Подключаем исправленный store
+const store = require('../lib/store'); 
 const { gptKeyboard } = require('../lib/models');
 
 const {
@@ -17,7 +17,7 @@ const {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// --- START (Выбор языка) ---
+// --- START ---
 bot.command('start', async (ctx) => {
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
     [
@@ -28,15 +28,13 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// --- УСТАНОВКА ЯЗЫКА (ИСПРАВЛЕНО) ---
+// --- SETUP LANGUAGE ---
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
   
   try {
-    // ИСПРАВЛЕНО: Используем setUserLang вместо несуществующего updateUser
     if (store.setUserLang) await store.setUserLang(userId, langCode);
     
-    // Проверяем модель, если нет - ставим дефолт
     let currentModel = null;
     if (store.getUserModel) currentModel = await store.getUserModel(userId);
     
@@ -87,7 +85,7 @@ bot.command('menu', async (ctx) => {
   });
 });
 
-// --- ОБРАБОТКА КНОПОК ---
+// --- CALLBACKS ---
 bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
   if (data.startsWith('set_lang_')) return;
@@ -95,11 +93,9 @@ bot.on('callback_query', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
     
-    // 1. AIChat Меню
+    // 1. AIChat Menu
     if (data.startsWith('menu_gpt')) {
       const lang = data.split('_')[2] || 'ru'; 
-      
-      // Получаем модель (ИСПРАВЛЕНО)
       let currentModel = 'gpt5mini';
       try {
           if (store.getUserModel) {
@@ -115,14 +111,12 @@ bot.on('callback_query', async (ctx) => {
         parse_mode: 'Markdown', 
         reply_markup: keyboard 
       });
-      
       await ctx.answerCbQuery();
       return;
     }
 
-    // 2. Выбор модели
+    // 2. Model Selection
     if (data.startsWith('model_')) {
-      // ИСПРАВЛЕНО: Получаем язык через getUserLang, а не getUser
       let userLang = 'ru';
       try {
           if (store.getUserLang) {
@@ -135,7 +129,6 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
 
-    // 3. Заглушки
     if (data === 'menu_main') {
         await ctx.editMessageText('📋 Menu', {
             reply_markup: { inline_keyboard: [[{text: '🤖 AI Chat', callback_data: 'menu_gpt_ru'}]] }
@@ -152,20 +145,26 @@ bot.on('callback_query', async (ctx) => {
   }
 });
 
-// --- КОМАНДЫ ---
+// --- COMMANDS ---
 bot.command('gpt', async (ctx) => ctx.reply('🤖 Use /menu'));
 bot.command('model', handleModelCommand);
 bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
 bot.command('clear', handleClearCommand);
 
+// ДОБАВЛЕНО: Явно разрешаем команду /debug
+bot.command('debug', async (ctx) => {
+    // Передаем её в текстовый обработчик, где прописана логика отладки
+    await handleTextMessage(ctx, '/debug');
+});
+
 bot.on('text', async (ctx) => {
+  // Если это команда (начинается с /), но мы её не знаем - игнорируем
   if (ctx.message.text.startsWith('/')) return;
   await handleTextMessage(ctx, ctx.message.text);
 });
 
 bot.catch((err) => console.error('Global Error:', err));
 
-// Экспорт для Vercel
 module.exports = async (req, res) => {
   try {
     if (req.method === 'POST') {
