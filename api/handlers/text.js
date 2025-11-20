@@ -4,7 +4,7 @@ const {
     GPT_MODELS, 
     isProKey, 
     isVisionModel, 
-    getModelForTask, // Новая функция для выбора спец-моделей
+    getModelForTask, 
     gptKeyboard, 
     premiumMsg, 
     resolvePModelByKey 
@@ -16,6 +16,13 @@ const FOOTER_MSG = {
   ru: "\n\n➖➖➖➖➖➖\n🔄 Сменить модель: /model | ⚙️ Настройки: /settingsbot",
   ro: "\n\n➖➖➖➖➖➖\n🔄 Schimbă modelul: /model | ⚙️ Setări: /settingsbot",
   en: "\n\n➖➖➖➖➖➖\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
+};
+
+// Сообщения, когда пришел файл без текста
+const ASK_FILE_MSG = {
+    ru: "🧐 Я вижу файл! Что мне с ним сделать? (Описать, решить задачу или перевести текст?)",
+    ro: "🧐 Văd fișierul! Ce dorești să fac cu el? (Să-l descriu, să rezolv o problemă sau să traduc text?)",
+    en: "🧐 I see the file! What should I do with it? (Describe it, solve a problem, or translate text?)"
 };
 
 // Получить красивое имя модели
@@ -57,19 +64,14 @@ async function chatWithAI(messages, modelKey) {
 
 // --- MAIN HANDLER ---
 async function handleTextMessage(ctx, textInput) {
-    // Проверяем наличие контента
     const message = ctx.message;
     const caption = message?.caption || '';
-    const text = textInput || caption || ''; // Текст может прийти аргументом или быть подписью
+    const text = textInput || caption || ''; 
     
-    // Флаги типов контента
     const isPhoto = message?.photo;
     const isVoice = message?.voice || message?.audio;
     const isVideo = message?.video || message?.video_note;
     const isDoc = message?.document;
-
-    // Если вообще пусто - выходим
-    if (!text && !isPhoto && !isVoice && !isVideo && !isDoc) return;
     
     const userId = ctx.from.id.toString();
 
@@ -105,41 +107,70 @@ async function handleTextMessage(ctx, textInput) {
         const userData = { model: savedModel, language: savedLang };
         const lang = userData.language;
 
-        // 2. ДОСТАЕМ ФАЙЛ (ЕСЛИ ЕСТЬ)
+        // 2. ПОДГОТОВКА ФАЙЛА (Загрузка из сообщения ИЛИ из буфера)
         let fileUrl = null;
-        let fileType = 'text'; // text, image, audio, video
-        
-        try {
-            let fileId = null;
-            
-            if (isPhoto) {
-                fileId = message.photo[message.photo.length - 1].file_id;
-                fileType = 'image';
-            } else if (isVoice) {
-                fileId = (message.voice || message.audio).file_id;
-                fileType = 'audio';
-            } else if (isVideo) {
-                fileId = (message.video || message.video_note).file_id;
-                fileType = 'video';
-            } else if (isDoc) {
-                fileId = message.document.file_id;
-                fileType = 'doc';
-            }
+        let fileType = 'text'; // text, image, audio, video, doc
+        const pendingKey = `pending_file:${userId}`;
 
-            if (fileId) {
-                const urlObj = await ctx.telegram.getFileLink(fileId);
-                fileUrl = urlObj.href;
-                console.log(`[Media] Got ${fileType} URL for user ${userId}`);
+        // А) Если файл пришел ПРЯМО СЕЙЧАС
+        if (isPhoto || isVoice || isVideo || isDoc) {
+            try {
+                let fileId = null;
+                if (isPhoto) {
+                    fileId = message.photo[message.photo.length - 1].file_id;
+                    fileType = 'image';
+                } else if (isVoice) {
+                    fileId = (message.voice || message.audio).file_id;
+                    fileType = 'audio';
+                } else if (isVideo) {
+                    fileId = (message.video || message.video_note).file_id;
+                    fileType = 'video';
+                } else if (isDoc) {
+                    fileId = message.document.file_id;
+                    fileType = 'doc';
+                }
+
+                if (fileId) {
+                    const urlObj = await ctx.telegram.getFileLink(fileId);
+                    fileUrl = urlObj.href;
+                    
+                    // ЛОГИКА: Если файл есть, а ТЕКСТА НЕТ — сохраняем и спрашиваем
+                    if (!text) {
+                        if (store.redis) {
+                            // Сохраняем на 5 минут (300 сек)
+                            await store.redis.set(pendingKey, { url: fileUrl, type: fileType }, { ex: 300 });
+                        }
+                        const askText = ASK_FILE_MSG[lang] || ASK_FILE_MSG.en;
+                        await ctx.reply(askText);
+                        return; // ПРЕРЫВАЕМ ВЫПОЛНЕНИЕ, ждем ответа юзера
+                    }
+                }
+            } catch (e) {
+                console.error("File processing error:", e);
             }
-        } catch (e) {
-            console.error("FileLink Error:", e);
+        } 
+        // Б) Если файла сейчас нет, но есть ТЕКСТ -> Проверяем БУФЕР
+        else if (text && store.redis) {
+            const pending = await store.redis.get(pendingKey);
+            if (pending) {
+                // Нашли "потерянный" файл
+                fileUrl = pending.url;
+                fileType = pending.type;
+                console.log(`[Router] Found pending ${fileType} for user ${userId}`);
+                // Удаляем из буфера, чтобы не использовать вечно
+                await store.redis.del(pendingKey);
+            }
         }
+
+        // Если после всех проверок нет ни текста, ни файла - выходим
+        if (!text && !fileUrl) return;
+
 
         // 3. УМНЫЙ МАРШРУТИЗАТОР (AUTO-SWITCH)
         let modelToUse = userData.model;
         let overrideReason = null;
 
-        // Логика переключения задач
+        // Выбираем модель под задачу
         if (fileType === 'audio') {
             modelToUse = getModelForTask('audio_input') || 'gemini_flash';
             overrideReason = "Audio Processing";
@@ -150,9 +181,9 @@ async function handleTextMessage(ctx, textInput) {
             modelToUse = getModelForTask('doc_heavy') || 'gemini_lite';
             overrideReason = "Document Analysis";
         } else if (fileType === 'image') {
-            // Если это фото, и текущая модель слепая -> переключаем на зрячую
+            // Если модель слепая -> Gemini
             if (!isVisionModel(modelToUse)) {
-                modelToUse = 'gemini_flash'; // Бесплатная смотрелка
+                modelToUse = 'gemini_flash';
                 overrideReason = "Vision Fallback";
             }
         }
@@ -161,7 +192,7 @@ async function handleTextMessage(ctx, textInput) {
             console.log(`[Router] Switching to ${modelToUse} for ${overrideReason}`);
         }
 
-        // 4. История
+        // 4. Загрузка истории
         let history = [];
         if (store.getHistory) {
             history = await store.getHistory(userId) || [];
@@ -175,20 +206,16 @@ async function handleTextMessage(ctx, textInput) {
             
             CONTEXT: Use conversation history.
             LANGUAGE: Reply in the SAME language as the user.
-            TASK: If a file (image/audio/doc) is provided, analyze it.`
+            TASK: If a file (image/audio/doc) is provided, analyze it according to user instructions.`
         };
 
-        // 6. Формирование сообщения (Multimodal Payload)
+        // 6. Формирование сообщения (Multimodal)
         let userMessageContent;
 
         if (fileUrl) {
-            // Для большинства мультимодальных моделей OpenRouter формат такой:
-            // (Для Gemini/GPT-4o это работает, для других может требоваться просто текст с URL)
             userMessageContent = [
-                { type: "text", text: text || (lang === 'ru' ? "Проанализируй этот файл." : "Analyze this file.") },
-                { type: "image_url", image_url: { url: fileUrl } } 
-                // Прим: OpenRouter часто принимает audio/video тоже через image_url или content url, 
-                // но для надежности лучше использовать модели, которые точно это умеют (Gemini).
+                { type: "text", text: text || (lang === 'ru' ? "Опиши это." : "Describe this.") },
+                { type: "image_url", image_url: { url: fileUrl } }
             ];
         } else {
             userMessageContent = text;
@@ -200,7 +227,7 @@ async function handleTextMessage(ctx, textInput) {
             { role: "user", content: userMessageContent }
         ];
 
-        // 7. Отправка
+        // 7. Отправка в ИИ
         const aiResponse = await chatWithAI(messagesToSend, modelToUse);
 
         if (aiResponse === "NO_KEY") { await ctx.reply("⚙️ API Key missing."); return; }
@@ -209,7 +236,7 @@ async function handleTextMessage(ctx, textInput) {
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        // 8. Сохранение
+        // 8. Сохранение в историю
         if (store.updateConversation) {
             const historyText = fileUrl ? `[${fileType.toUpperCase()}] ${text}` : text;
             await store.updateConversation(
@@ -225,7 +252,7 @@ async function handleTextMessage(ctx, textInput) {
     }
 }
 
-// --- КОМАНДЫ ---
+// --- КОМАНДЫ (Без изменений) ---
 
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
@@ -236,7 +263,7 @@ async function handleClearCommand(ctx) {
 async function handleModelCommand(ctx) {
     const userId = ctx.from.id.toString();
     let lang = 'ru';
-    let model = 'deepseek'; // Default
+    let model = 'deepseek'; 
     try {
         if (store.getUserLang) lang = await store.getUserLang(userId) || 'ru';
         if (store.getUserModel) model = await store.getUserModel(userId) || 'deepseek';
@@ -289,3 +316,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
+                        
