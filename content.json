@@ -1,5 +1,54 @@
 {
   "lang_select": "🌐 Alege limba / Choose language / Выберите язык:",
+  
+  "commands": {
+      "ru": [
+          { "command": "start", "description": "Перезапуск бота" },
+          { "command": "info", "description": "Что умеет бот" },
+          { "command": "account", "description": "Мой аккаунт" },
+          { "command": "premium", "description": "Купить Премиум" },
+          { "command": "clear", "description": "Сброс контекста" },
+          { "command": "image", "description": "Генерация фото" },
+          { "command": "suno", "description": "Создать музыку" },
+          { "command": "video", "description": "Создать видео" },
+          { "command": "academic", "description": "Учеба и Рефераты" },
+          { "command": "search", "description": "Поиск в интернете" },
+          { "command": "settings", "description": "Настройки" },
+          { "command": "help", "description": "Помощь" },
+          { "command": "terms", "description": "Правила" }
+      ],
+      "en": [
+          { "command": "start", "description": "Restart bot" },
+          { "command": "info", "description": "What bot can do" },
+          { "command": "account", "description": "My Account" },
+          { "command": "premium", "description": "Get Premium" },
+          { "command": "clear", "description": "Clear context" },
+          { "command": "image", "description": "Generate image" },
+          { "command": "suno", "description": "Create music" },
+          { "command": "video", "description": "Create video" },
+          { "command": "academic", "description": "Academic help" },
+          { "command": "search", "description": "Web Search" },
+          { "command": "settings", "description": "Settings" },
+          { "command": "help", "description": "Help" },
+          { "command": "terms", "description": "Terms" }
+      ],
+      "ro": [
+          { "command": "start", "description": "Repornire" },
+          { "command": "info", "description": "Ce poate botul" },
+          { "command": "account", "description": "Contul meu" },
+          { "command": "premium", "description": "Cumpără Premium" },
+          { "command": "clear", "description": "Șterge context" },
+          { "command": "image", "description": "Generare foto" },
+          { "command": "suno", "description": "Creează muzică" },
+          { "command": "video", "description": "Creează video" },
+          { "command": "academic", "description": "Studii și Referate" },
+          { "command": "search", "description": "Căutare web" },
+          { "command": "settings", "description": "Setări" },
+          { "command": "help", "description": "Ajutor" },
+          { "command": "terms", "description": "Termeni" }
+      ]
+  },
+
   "welcome": {
     "ro": "Salut! 👋 Acest bot îți oferă acces la interacțiunea cu cele mai bune modele AI pentru lucru cu texte și documente, precum și pentru generarea de imagini, video și muzică.\n\nModele noi disponibile: OpenAI o3, o4 mini, GPT‑4o, DeepSeek, Claude 4.5, /Midjourney, /StableDiffusion, Flux, Kling, /Suno, Perplexity și altele.\n\nGratuit: GPT 5 mini și Gemini 2.5 Flash.\n\nBotul poate:\n• Scrie și traduce texte 📝\n• Genera imagini și video 🌅🎬\n• Lucra cu documente 🗂\n• Scrie și corecta cod ⌨\n• Rezolva probleme de matematică 🧮\n• Crea muzică și piese 🎸\n• Edita și face OCR pe poze 🖌\n• Scrie lucrări: teze, cursuri, eseuri, referate, cărți și prezentări 🎓\n• Face TTS și recunoaștere/transcriere audio 🎙\n\n📝 TEXT: scrie întrebarea sau trimite un mesaj vocal (alegerea modelului în /model).\n• /i + întrebare — căutare pe web\n\n🌅 IMAGINI: folosește comanda /imagine + descriere (/Midjourney, /StableDiffusion, Flux și DALL·E 3 — în /premium).\n\n🎬 VIDEO: /video — generare clipuri (disponibil în /Kling, Veo3).\n\n🎸 MUZICĂ: /music — alege genul și adaugă versurile (disponibil în /Suno).\n\n➡️ MESAJ REDIRECȚIONAT: redirecționează mesajul către bot pentru analiză, rescriere, creare de articole etc.\n\n👨‍👩‍👧‍👦 GRUPURI: adaugă botul într‑un grup și folosește comanda /ask + întrebarea ta.\n\n📚 AJUTOR: /help — listă completă de funcții, comenzi și instrucțiuni.",
     "en": "Hello! 👋 This bot gives you access to the best AI models for text, documents, images, video, and music generation.\n\nNew models available: OpenAI o3, o4 mini, GPT‑4o, DeepSeek, Claude 4.5, /Midjourney, /StableDiffusion, Flux, Kling, /Suno, Perplexity and others.\n\nFree: GPT 5 mini and Gemini 2.5 Flash.\n\nThe bot can:\n• Write and translate texts 📝\n• Generate images and video 🌅🎬\n• Work with documents 🗂\n• Write and debug code ⌨\n• Solve math problems 🧮\n• Create music and songs 🎸\n• Edit and OCR photos 🖌\n• Write papers: theses, essays, reports, books, and presentations 🎓\n• TTS and audio transcription 🎙\n\n📝 TEXT: write a question or send a voice message (choose model in /model).\n• /i + question — web search\n\n🌅 IMAGES: use /imagine + description (/Midjourney, /StableDiffusion, Flux and DALL·E 3 — in /premium).\n\n🎬 VIDEO: /video — generate clips (available in /Kling, Veo3).\n\n🎸 MUSIC: /music — choose genre and add lyrics (available in /Suno).\n\n➡️ FORWARDED MSG: forward messages to the bot for analysis, rewriting, etc.\n\n👨‍👩‍👧‍👦 GROUPS: add bot to a group and use /ask + your question.\n\n📚 HELP: /help — full list of functions, commands, and instructions.",
@@ -10,5 +59,4 @@
     "ro": "În bot sunt disponibile cele mai noi versiuni ChatGPT, Claude, DeepSeek și Gemini:\n\n💥 OpenAI o3 — model de top, \"gândește\" înainte de a răspunde. 1 cerere = 2 din balanță.\n⚡️ OpenAI o4 mini — mai rapid ca o3, pentru cod și științe.\n\n🚀 ChatGPT 5 — modelul de top OpenAI.\n💻 GPT 5 — puternic pentru codare.\n💡 GPT 4o — inteligent și rapid.\n🤖 GPT 4.1 — rapid, pentru sarcini zilnice.\n\n🧠 Claude 4.5 Sonnet — model de top Anthropic.\n💬 Claude 4.5 Thinking — mod de gândire profundă (x2 tokeni).\n\n🐼 DeepSeek-V3.2 — model text.\n🐳 DeepSeek V3.2 — model rațional.\n\n⭐️ Gemini 2.5 Pro — model rațional de top Google.\n👽 Gemini 2.5 Flash — model rapid pentru chat.\n\nLucrul cu documente (max 20MB) disponibil în Claude.\n\n🎁 Gratuit: GPT 5 mini, Gemini 2.5 Flash, DeepSeek V3.2.\nRestul modelelor în /premium.",
     "en": "Latest versions of ChatGPT, Claude, DeepSeek, and Gemini are available:\n\n💥 OpenAI o3 — flagship reasoning model. 1 request = 2 balance.\n⚡️ OpenAI o4 mini — faster than o3, for code and science.\n\n🚀 ChatGPT 5 — OpenAI flagship.\n💻 GPT 5 — powerful for coding.\n💡 GPT 4o — smart and fast.\n🤖 GPT 4.1 — fast, for daily tasks.\n\n🧠 Claude 4.5 Sonnet — Anthropic flagship.\n💬 Claude 4.5 Thinking — deep thinking mode (x2 tokens).\n\n🐼 DeepSeek-V3.2 — text model.\n🐳 DeepSeek V3.2 — reasoning model.\n\n⭐️ Gemini 2.5 Pro — Google reasoning flagship.\n👽 Gemini 2.5 Flash — fast chat model.\n\nDocument processing (up to 20MB) available in Claude.\n\n🎁 Free: GPT 5 mini, Gemini 2.5 Flash, DeepSeek V3.2.\nOther models available in /premium."
   }
-}    
- 
+}
