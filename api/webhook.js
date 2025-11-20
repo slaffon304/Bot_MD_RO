@@ -1,6 +1,6 @@
 /**
  * Webhook handler
- * UPD: Добавлена поддержка Voice, Audio и Video для новых моделей
+ * UPD: Добавлена установка меню команд (Menu Button) + Медиа
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -17,8 +17,29 @@ const {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
+// --- INIT COMMANDS (Настройка меню) ---
+const setBotCommands = async () => {
+    try {
+        // Проверка на всякий случай, если content.commands еще не загрузился
+        if (!content.commands) return;
+
+        await bot.telegram.setMyCommands(content.commands.en, { language_code: 'en' });
+        await bot.telegram.setMyCommands(content.commands.ru, { language_code: 'ru' });
+        await bot.telegram.setMyCommands(content.commands.ro, { language_code: 'ro' });
+        
+        // Дефолтное (для всех остальных языков ставим английский)
+        await bot.telegram.setMyCommands(content.commands.en);
+        console.log('Bot commands updated');
+    } catch (e) {
+        console.error('Failed to set commands:', e);
+    }
+};
+
 // --- START ---
 bot.command('start', async (ctx) => {
+  // Обновляем меню команд при старте
+  setBotCommands();
+
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
     [
       Markup.button.callback('🇹🇩 Română', 'set_lang_ro'),
@@ -38,7 +59,7 @@ const setupLanguage = async (ctx, langCode) => {
     let currentModel = null;
     if (store.getUserModel) currentModel = await store.getUserModel(userId);
     
-    // Дефолт: DeepSeek (самая умная бесплатная)
+    // Дефолт: DeepSeek
     if (!currentModel && store.setUserModel) {
         await store.setUserModel(userId, 'deepseek');
     }
@@ -157,9 +178,9 @@ bot.command('debug', async (ctx) => {
 });
 
 // --- ОБРАБОТКА ВСЕХ ФАЙЛОВ (Media Router) ---
-// Добавили voice, audio, video
+// Добавили voice, audio, video, photo, document
 bot.on(['photo', 'document', 'voice', 'audio', 'video'], async (ctx) => {
-    // Передаем caption (подпись) или пустую строку, если это голосовое
+    // Передаем caption (подпись) или пустую строку
     const text = ctx.message.caption || ''; 
     // Весь объект сообщения (ctx) уйдет в text.js, где мы достанем ссылки на файлы
     await handleTextMessage(ctx, text);
@@ -185,3 +206,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
+      
