@@ -59,7 +59,7 @@ const COMMANDS_LIST = {
         { command: "suno", description: "Creează muzică" },
         { command: "video", description: "Creează video" },
         { command: "academic", description: "Studii și Referate" },
-        { command: "search", "description": "Căutare web" },
+        { command: "search", description: "Căutare web" },
         { command: "settings", description: "Setări" },
         { command: "help", description: "Comenzi principale" },
         { command: "terms", description: "Termeni" }
@@ -83,6 +83,7 @@ const setBotCommands = async () => {
 
 // --- START ---
 bot.command('start', async (ctx) => {
+  // Обновляем меню при каждом старте
   setBotCommands();
 
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
@@ -104,6 +105,21 @@ bot.command('setup_menu', async (ctx) => {
         await ctx.reply('❌ Error updating menu.');
     }
 });
+
+// --- HANDLERS FOR MENU BUTTONS (НОВЫЕ) ---
+// Добавил заглушки, чтобы кнопки работали. Позже заменим на логику.
+bot.command('info', (ctx) => ctx.reply("🤖 *Info*\nЯ могу искать информацию, генерировать фото, музыку и код.", { parse_mode: 'Markdown' }));
+bot.command('account', (ctx) => ctx.reply(`👤 *Account*\nID: \`${ctx.from.id}\`\nStatus: Free User`, { parse_mode: 'Markdown' }));
+bot.command('premium', (ctx) => ctx.reply("💎 *Premium*\nСкоро здесь будет оплата.", { parse_mode: 'Markdown' }));
+bot.command('image', (ctx) => ctx.reply("🎨 *Image Gen*\nНапиши описание картинки...", { parse_mode: 'Markdown' }));
+bot.command('suno', (ctx) => ctx.reply("🎵 *Music*\nФункция в разработке.", { parse_mode: 'Markdown' }));
+bot.command('video', (ctx) => ctx.reply("🎬 *Video*\nФункция в разработке.", { parse_mode: 'Markdown' }));
+bot.command('academic', (ctx) => ctx.reply("🎓 *Academic*\nРежим для учебы включен.", { parse_mode: 'Markdown' }));
+bot.command('search', (ctx) => ctx.reply("🔍 *Search*\nНапиши запрос для поиска...", { parse_mode: 'Markdown' }));
+bot.command('settings', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
+bot.command('settingsbot', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
+bot.command('terms', (ctx) => ctx.reply("📄 *Terms*\nПравила использования.", { parse_mode: 'Markdown' }));
+
 
 // --- SETUP LANGUAGE ---
 const setupLanguage = async (ctx, langCode) => {
@@ -145,7 +161,6 @@ bot.action('set_lang_ru', (ctx) => setupLanguage(ctx, 'ru'));
 
 // --- MENU COMMAND (FULL KEYBOARD FIX) ---
 bot.command('menu', async (ctx) => {
-    // Определяем язык, чтобы вставить правильный callback
     const userId = ctx.from.id.toString();
     let lang = 'en';
     try {
@@ -211,7 +226,6 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
 
-    // ВОЗВРАТ В ГЛАВНОЕ МЕНЮ (ПОЛНОЕ)
     if (data === 'menu_main') {
         let lang = 'en';
         try { if (store.getUserLang) lang = await store.getUserLang(userId) || 'en'; } catch(e) {}
