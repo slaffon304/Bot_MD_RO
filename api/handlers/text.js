@@ -157,7 +157,7 @@ async function handleTextMessage(ctx, textInput) {
                 fileUrl = pending.url;
                 fileType = pending.type;
                 console.log(`[Router] Found pending ${fileType} for user ${userId}`);
-                // Удаляем из буфера, чтобы не использовать вечно
+                // Удаляем из буфера
                 await store.redis.del(pendingKey);
             }
         }
@@ -198,15 +198,21 @@ async function handleTextMessage(ctx, textInput) {
             history = await store.getHistory(userId) || [];
         }
 
-        // 5. Системный Промпт
+        // 5. СИСТЕМНЫЙ ПРОМПТ (ОБНОВЛЕН: ЗАЩИТА ОТ ОШИБОК РЕДАКТИРОВАНИЯ)
         const niceModelName = getModelNiceName(modelToUse, lang);
+        
         const systemPrompt = {
             role: "system",
             content: `You are a helpful AI assistant running on the "${niceModelName}" model.
             
-            CONTEXT: Use conversation history.
-            LANGUAGE: Reply in the SAME language as the user.
-            TASK: If a file (image/audio/doc) is provided, analyze it according to user instructions.`
+            CAPABILITIES:
+            1. TEXT: Answer questions, write code, translate.
+            2. VISION: If an image is provided, I can SEE and DESCRIBE it.
+            3. LIMITATION: I CANNOT edit images (remove background, change colors, etc) or generate new ones inside this chat yet.
+            
+            INSTRUCTION:
+            - If the user asks to EDIT an image (e.g. "remove background"), politely refuse and explain that you can only analyze/describe it.
+            - Reply in the SAME language as the user.`
         };
 
         // 6. Формирование сообщения (Multimodal)
@@ -252,7 +258,7 @@ async function handleTextMessage(ctx, textInput) {
     }
 }
 
-// --- КОМАНДЫ (Без изменений) ---
+// --- КОМАНДЫ ---
 
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
@@ -316,4 +322,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-                        
+        
