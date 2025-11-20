@@ -1,6 +1,6 @@
 /**
  * Webhook handler
- * UPD: Добавлена установка меню команд (Menu Button) + Медиа
+ * UPD: Добавлена команда /setup_menu и поддержка Медиа
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -21,7 +21,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const setBotCommands = async () => {
     try {
         // Проверка на всякий случай, если content.commands еще не загрузился
-        if (!content.commands) return;
+        if (!content.commands) return false;
 
         await bot.telegram.setMyCommands(content.commands.en, { language_code: 'en' });
         await bot.telegram.setMyCommands(content.commands.ru, { language_code: 'ru' });
@@ -30,8 +30,10 @@ const setBotCommands = async () => {
         // Дефолтное (для всех остальных языков ставим английский)
         await bot.telegram.setMyCommands(content.commands.en);
         console.log('Bot commands updated');
+        return true;
     } catch (e) {
         console.error('Failed to set commands:', e);
+        return false;
     }
 };
 
@@ -47,6 +49,17 @@ bot.command('start', async (ctx) => {
       Markup.button.callback('🇷🇺 Русский', 'set_lang_ru')
     ]
   ]));
+});
+
+// --- 🔥 НОВАЯ КОМАНДА: ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ МЕНЮ ---
+bot.command('setup_menu', async (ctx) => {
+    await ctx.reply('⏳ Updating Telegram menu...');
+    const success = await setBotCommands();
+    if (success) {
+        await ctx.reply('✅ Menu updated! Please RESTART your Telegram app (close and open again) to see changes.');
+    } else {
+        await ctx.reply('❌ Error updating menu. Check logs/content.json');
+    }
 });
 
 // --- SETUP LANGUAGE ---
@@ -206,4 +219,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-      
+                        
