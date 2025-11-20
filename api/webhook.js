@@ -1,6 +1,6 @@
 /**
  * Webhook handler
- * UPD: Добавлена команда /setup_menu и поддержка Медиа
+ * UPD: Полное меню команд (/menu) + Жесткое обновление системного меню
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -17,19 +17,63 @@ const {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// --- INIT COMMANDS (Настройка меню) ---
+// --- СПИСОК КОМАНД (HARDCODED) ---
+const COMMANDS_LIST = {
+    en: [
+        { command: "start", description: "Restart Bot" },
+        { command: "info", description: "What bot can do" },
+        { command: "account", description: "My Account" },
+        { command: "premium", description: "Premium Subscription" },
+        { command: "clear", description: "Delete Context" },
+        { command: "image", description: "Image Generation" },
+        { command: "suno", description: "Create Music" },
+        { command: "video", description: "Create Video" },
+        { command: "academic", description: "Academic Service" },
+        { command: "search", description: "Internet Search" },
+        { command: "settings", description: "Bot Settings" },
+        { command: "help", description: "Main Commands" },
+        { command: "terms", description: "User Agreement" }
+    ],
+    ru: [
+        { command: "start", description: "Перезапуск" },
+        { command: "info", description: "Что умеет бот" },
+        { command: "account", description: "Мой аккаунт" },
+        { command: "premium", description: "Премиум подписка" },
+        { command: "clear", description: "Сброс контекста" },
+        { command: "image", description: "Генерация фото" },
+        { command: "suno", description: "Создать музыку" },
+        { command: "video", description: "Создать видео" },
+        { command: "academic", description: "Учеба и Рефераты" },
+        { command: "search", description: "Поиск в интернете" },
+        { command: "settings", description: "Настройки" },
+        { command: "help", description: "Главные команды" },
+        { command: "terms", description: "Соглашение" }
+    ],
+    ro: [
+        { command: "start", description: "Repornire" },
+        { command: "info", description: "Ce poate botul" },
+        { command: "account", description: "Contul meu" },
+        { command: "premium", description: "Abonament Premium" },
+        { command: "clear", description: "Șterge context" },
+        { command: "image", description: "Generare foto" },
+        { command: "suno", description: "Creează muzică" },
+        { command: "video", description: "Creează video" },
+        { command: "academic", description: "Studii și Referate" },
+        { command: "search", "description": "Căutare web" },
+        { command: "settings", description: "Setări" },
+        { command: "help", description: "Comenzi principale" },
+        { command: "terms", description: "Termeni" }
+    ]
+};
+
+// --- INIT COMMANDS ---
 const setBotCommands = async () => {
     try {
-        // Проверка на всякий случай, если content.commands еще не загрузился
-        if (!content.commands) return false;
-
-        await bot.telegram.setMyCommands(content.commands.en, { language_code: 'en' });
-        await bot.telegram.setMyCommands(content.commands.ru, { language_code: 'ru' });
-        await bot.telegram.setMyCommands(content.commands.ro, { language_code: 'ro' });
-        
-        // Дефолтное (для всех остальных языков ставим английский)
-        await bot.telegram.setMyCommands(content.commands.en);
-        console.log('Bot commands updated');
+        await bot.telegram.setMyCommands(COMMANDS_LIST.en);
+        await bot.telegram.setMyCommands(COMMANDS_LIST.en, { language_code: 'en' });
+        await bot.telegram.setMyCommands(COMMANDS_LIST.ru, { language_code: 'ru' });
+        await bot.telegram.setMyCommands(COMMANDS_LIST.ro, { language_code: 'ro' });
+        console.log('Bot commands updated HARD');
         return true;
     } catch (e) {
         console.error('Failed to set commands:', e);
@@ -39,7 +83,6 @@ const setBotCommands = async () => {
 
 // --- START ---
 bot.command('start', async (ctx) => {
-  // Обновляем меню команд при старте
   setBotCommands();
 
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
@@ -51,53 +94,45 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// --- 🔥 НОВАЯ КОМАНДА: ПРИНУДИТЕЛЬНОЕ ОБНОВЛЕНИЕ МЕНЮ ---
+// --- SETUP MENU (FORCE) ---
 bot.command('setup_menu', async (ctx) => {
     await ctx.reply('⏳ Updating Telegram menu...');
     const success = await setBotCommands();
     if (success) {
-        await ctx.reply('✅ Menu updated! Please RESTART your Telegram app (close and open again) to see changes.');
+        await ctx.reply('✅ Menu updated! Restart Telegram app.');
     } else {
-        await ctx.reply('❌ Error updating menu. Check logs/content.json');
+        await ctx.reply('❌ Error updating menu.');
     }
 });
 
 // --- SETUP LANGUAGE ---
 const setupLanguage = async (ctx, langCode) => {
   const userId = ctx.from.id.toString();
-  
   try {
     if (store.setUserLang) await store.setUserLang(userId, langCode);
-    
     let currentModel = null;
     if (store.getUserModel) currentModel = await store.getUserModel(userId);
-    
-    // Дефолт: DeepSeek
-    if (!currentModel && store.setUserModel) {
-        await store.setUserModel(userId, 'deepseek');
-    }
-  } catch (e) {
-      console.error("Setup Lang DB Error:", e);
-  }
+    if (!currentModel && store.setUserModel) await store.setUserModel(userId, 'deepseek');
+  } catch (e) { console.error("Setup Lang DB Error:", e); }
 
   const welcomeText = content.welcome[langCode] || content.welcome.en;
-  
   try { await ctx.deleteMessage().catch(() => {}); } catch (e) {}
 
+  // FULL KEYBOARD
   await ctx.reply(welcomeText, {
     reply_markup: {
         inline_keyboard: [
           [
             { text: '🤖 AI Chat', callback_data: `menu_gpt_${langCode}` }, 
-            { text: '🎨 AI Design', callback_data: 'menu_design' },
+            { text: '🎨 AI Design', callback_data: 'menu_design' }
           ],
           [
             { text: '🎵 AI Audio', callback_data: 'menu_audio' },
-            { text: '🎬 AI Video', callback_data: 'menu_video' },
+            { text: '🎬 AI Video', callback_data: 'menu_video' }
           ],
           [
             { text: '⚙️ Settings', callback_data: 'menu_settings' },
-            { text: '❓ Help', callback_data: 'menu_help' },
+            { text: '❓ Help', callback_data: 'menu_help' }
           ],
         ],
       }
@@ -108,13 +143,31 @@ bot.action('set_lang_ro', (ctx) => setupLanguage(ctx, 'ro'));
 bot.action('set_lang_en', (ctx) => setupLanguage(ctx, 'en'));
 bot.action('set_lang_ru', (ctx) => setupLanguage(ctx, 'ru'));
 
+// --- MENU COMMAND (FULL KEYBOARD FIX) ---
 bot.command('menu', async (ctx) => {
+    // Определяем язык, чтобы вставить правильный callback
+    const userId = ctx.from.id.toString();
+    let lang = 'en';
+    try {
+        if (store.getUserLang) lang = await store.getUserLang(userId) || 'en';
+    } catch(e) {}
+
     await ctx.reply('📋 *Menu*', {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
-        [{ text: '🤖 AI Chat', callback_data: 'menu_gpt_ru' }], 
-        [{ text: '❓ Help', callback_data: 'menu_help' }],
+          [
+            { text: '🤖 AI Chat', callback_data: `menu_gpt_${lang}` }, 
+            { text: '🎨 AI Design', callback_data: 'menu_design' }
+          ],
+          [
+            { text: '🎵 AI Audio', callback_data: 'menu_audio' },
+            { text: '🎬 AI Video', callback_data: 'menu_video' }
+          ],
+          [
+            { text: '⚙️ Settings', callback_data: 'menu_settings' },
+            { text: '❓ Help', callback_data: 'menu_help' }
+          ],
       ],
     },
   });
@@ -128,10 +181,9 @@ bot.on('callback_query', async (ctx) => {
   try {
     const userId = ctx.from.id.toString();
     
-    // 1. AIChat Menu
     if (data.startsWith('menu_gpt')) {
       const lang = data.split('_')[2] || 'ru'; 
-      let currentModel = 'deepseek'; // Default
+      let currentModel = 'deepseek'; 
       try {
           if (store.getUserModel) {
             const m = await store.getUserModel(userId);
@@ -142,15 +194,11 @@ bot.on('callback_query', async (ctx) => {
       const menuText = content.gpt_menu[lang] || content.gpt_menu.en;
       const keyboard = gptKeyboard(lang, currentModel, () => false);
 
-      await ctx.editMessageText(menuText, {
-        parse_mode: 'Markdown', 
-        reply_markup: keyboard 
-      });
+      await ctx.editMessageText(menuText, { parse_mode: 'Markdown', reply_markup: keyboard });
       await ctx.answerCbQuery();
       return;
     }
 
-    // 2. Model Selection
     if (data.startsWith('model_')) {
       let userLang = 'ru';
       try {
@@ -159,14 +207,33 @@ bot.on('callback_query', async (ctx) => {
             if (l) userLang = l;
           }
       } catch(e) {}
-
       await handleModelCallback(ctx, userLang); 
       return;
     }
 
+    // ВОЗВРАТ В ГЛАВНОЕ МЕНЮ (ПОЛНОЕ)
     if (data === 'menu_main') {
-        await ctx.editMessageText('📋 Menu', {
-            reply_markup: { inline_keyboard: [[{text: '🤖 AI Chat', callback_data: 'menu_gpt_ru'}]] }
+        let lang = 'en';
+        try { if (store.getUserLang) lang = await store.getUserLang(userId) || 'en'; } catch(e) {}
+        
+        await ctx.editMessageText('📋 *Menu*', {
+            parse_mode: 'Markdown',
+            reply_markup: { 
+                inline_keyboard: [
+                  [
+                    { text: '🤖 AI Chat', callback_data: `menu_gpt_${lang}` }, 
+                    { text: '🎨 AI Design', callback_data: 'menu_design' }
+                  ],
+                  [
+                    { text: '🎵 AI Audio', callback_data: 'menu_audio' },
+                    { text: '🎬 AI Video', callback_data: 'menu_video' }
+                  ],
+                  [
+                    { text: '⚙️ Settings', callback_data: 'menu_settings' },
+                    { text: '❓ Help', callback_data: 'menu_help' }
+                  ],
+                ] 
+            }
         });
     }
     
@@ -174,28 +241,19 @@ bot.on('callback_query', async (ctx) => {
 
   } catch (error) {
     console.error('Callback Error:', error);
-    if (error.description && error.description.includes('message to edit not found')) {
-       await ctx.reply('Session expired. /menu');
-    }
   }
 });
 
 // --- COMMANDS ---
-bot.command('gpt', async (ctx) => ctx.reply('🤖 Use /menu'));
+bot.command('gpt', async (ctx) => ctx.reply('🤖 Use /menu -> AI Chat'));
 bot.command('model', handleModelCommand);
 bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
 bot.command('clear', handleClearCommand);
+bot.command('debug', async (ctx) => { await handleTextMessage(ctx, '/debug'); });
 
-bot.command('debug', async (ctx) => {
-    await handleTextMessage(ctx, '/debug');
-});
-
-// --- ОБРАБОТКА ВСЕХ ФАЙЛОВ (Media Router) ---
-// Добавили voice, audio, video, photo, document
+// --- MEDIA ROUTER ---
 bot.on(['photo', 'document', 'voice', 'audio', 'video'], async (ctx) => {
-    // Передаем caption (подпись) или пустую строку
     const text = ctx.message.caption || ''; 
-    // Весь объект сообщения (ctx) уйдет в text.js, где мы достанем ссылки на файлы
     await handleTextMessage(ctx, text);
 });
 
@@ -219,4 +277,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-                        
+      
