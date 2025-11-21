@@ -1,12 +1,12 @@
 /**
  * Webhook handler
- * UPD: Полное меню команд (/menu) + Жесткое обновление системного меню + Обработчики команд
+ * UPD: Живые команды /info и /account с кнопками
  */
 
 const { Telegraf, Markup } = require('telegraf');
 const content = require('../content.json');
 const store = require('../lib/store'); 
-const { gptKeyboard } = require('../lib/models');
+const { gptKeyboard, GPT_MODELS } = require('../lib/models');
 
 const {
   handleTextMessage,
@@ -16,6 +16,98 @@ const {
 } = require('./handlers/text');
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+
+// --- ТЕКСТЫ СООБЩЕНИЙ ---
+const MESSAGES = {
+  info: {
+    ru: `Привет! 👋 Этот бот даёт вам доступ к лучшим нейросетям для создания текста, изображений, видео и песен.
+
+Доступны новые модели: OpenAI o3, o4 mini, GPT 4o, DeepSeek, Claude 4.5, /Midjourney, /StableDiffusion, Flux, Kling, /Suno, Perplexity и другие.
+
+Бесплатно: GPT 5 mini и Gemini 2.5 Flash.
+
+Чатбот умеет:
+• Писать и переводить тексты 📝
+• Генерировать картинки и видео 🌅🎬
+• Работать с документами 🗂
+• Писать и править код ⌨
+• Решать математические задачи 🧮
+• Создавать музыку и песни 🎸
+• Редактировать и распознавать фото 🖌
+• Писать полноценные дипломы, курсовые, эссе, рефераты, книги и презентации 🎓
+• Озвучивать текст и распознавать аудио 🎙
+
+📝 ТЕКСТ: просто напишите вопрос или отправьте голосовое сообщение (выбор нейросети в /model).
+• /i + вопрос – поиск в интернете
+
+🌅 ИЗОБРАЖЕНИЯ: введите команду /imagine и описание (/Midjourney, /StableDiffusion, Flux и DALL•E 3 доступны в /premium).
+
+🎬 ВИДЕО: /video – создание роликов (доступно в /Kling).
+
+🎸 МУЗЫКА: /music – выберите жанр и добавьте текст песни (доступно в /Suno).
+
+➡️ РАБОТА С РЕПОСТАМИ: перешлите сообщение боту для анализа, переписывания, создания статей и др.
+
+👨‍👩‍👧‍👦 РАБОТА В ГРУППАХ: добавьте бота в группу и используйте команду /ask + ваш запрос.
+
+📚 ПОМОЩЬ: /help — полный список возможностей, команд и инструкций.`,
+    
+    en: `Hello! 👋 This bot gives you access to the best neural networks for creating text, images, video, and songs.
+
+Available models: OpenAI o3, o4 mini, GPT 4o, DeepSeek, Claude 4.5, /Midjourney, /StableDiffusion, Flux, Kling, /Suno, Perplexity and others.
+
+Free: GPT 5 mini and Gemini 2.5 Flash.
+
+The Chatbot can:
+• Write and translate texts 📝
+• Generate images and videos 🌅🎬
+• Work with documents 🗂
+• Write and fix code ⌨
+• Solve math problems 🧮
+• Create music and songs 🎸
+• Edit and recognize photos 🖌
+• Write full diplomas, essays, books 🎓
+• Voice text and recognize audio 🎙
+
+📝 TEXT: just write a question (select model in /model).
+• /i + question – internet search
+
+🌅 IMAGES: /imagine + description (/Midjourney, /StableDiffusion, Flux in /premium).
+
+🎬 VIDEO: /video – create clips (/Kling).
+
+🎸 MUSIC: /music – create songs (/Suno).
+
+📚 HELP: /help — full list of commands.`,
+
+    ro: `Salut! 👋 Acest bot îți oferă acces la cele mai bune rețele neuronale pentru creare de text, imagini, video și muzică.
+
+Modele disponibile: OpenAI o3, o4 mini, GPT 4o, DeepSeek, Claude 4.5, /Midjourney, /StableDiffusion, Flux, Kling, /Suno, Perplexity și altele.
+
+Gratuit: GPT 5 mini și Gemini 2.5 Flash.
+
+Chatbot-ul poate:
+• Scrie și traduce texte 📝
+• Genera imagini și video 🌅🎬
+• Lucra cu documente 🗂
+• Scrie și corecta cod ⌨
+• Rezolva probleme matematice 🧮
+• Crea muzică și cântece 🎸
+• Recunoaște fotografii 🖌
+• Scrie teze, referate, cărți 🎓
+
+📝 TEXT: scrie întrebarea (alege modelul în /model).
+• /i + întrebare – căutare pe internet
+
+🌅 IMAGINI: /imagine + descriere (/Midjourney, /StableDiffusion în /premium).
+
+🎬 VIDEO: /video – creare clipuri (/Kling).
+
+🎸 MUZICĂ: /music – creare muzică (/Suno).
+
+📚 AJUTOR: /help — lista completă de comenzi.`
+  }
+};
 
 // --- СПИСОК КОМАНД (HARDCODED) ---
 const COMMANDS_LIST = {
@@ -84,7 +176,6 @@ const setBotCommands = async () => {
 // --- START ---
 bot.command('start', async (ctx) => {
   setBotCommands();
-
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
     [
       Markup.button.callback('🇹🇩 Română', 'set_lang_ro'),
@@ -94,29 +185,99 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// --- HANDLERS FOR MENU COMMANDS (ЧТОБЫ КНОПКИ РАБОТАЛИ) ---
-bot.command('info', (ctx) => ctx.reply("🤖 *Info*\nЯ могу искать информацию, генерировать фото, музыку и код.", { parse_mode: 'Markdown' }));
-bot.command('account', (ctx) => ctx.reply(`👤 *Account*\nID: \`${ctx.from.id}\`\nStatus: Free User`, { parse_mode: 'Markdown' }));
-bot.command('premium', (ctx) => ctx.reply("💎 *Premium*\nСкоро здесь будет оплата.", { parse_mode: 'Markdown' }));
-bot.command('image', (ctx) => ctx.reply("🎨 *Image Gen*\nНапиши описание картинки...", { parse_mode: 'Markdown' }));
-bot.command('suno', (ctx) => ctx.reply("🎵 *Music*\nФункция в разработке.", { parse_mode: 'Markdown' }));
-bot.command('video', (ctx) => ctx.reply("🎬 *Video*\nФункция в разработке.", { parse_mode: 'Markdown' }));
-bot.command('academic', (ctx) => ctx.reply("🎓 *Academic*\nРежим для учебы включен.", { parse_mode: 'Markdown' }));
-bot.command('search', (ctx) => ctx.reply("🔍 *Search*\nНапиши запрос для поиска...", { parse_mode: 'Markdown' }));
-bot.command('settings', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
-bot.command('settingsbot', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
-bot.command('terms', (ctx) => ctx.reply("📄 *Terms*\nПравила использования.", { parse_mode: 'Markdown' }));
+// --- COMMAND: /INFO ---
+bot.command('info', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    let lang = 'en';
+    try { if (store.getUserLang) lang = await store.getUserLang(userId) || 'en'; } catch(e) {}
 
+    const text = MESSAGES.info[lang] || MESSAGES.info.en;
+    await ctx.reply(text);
+});
 
-// --- SETUP MENU (FORCE) ---
-bot.command('setup_menu', async (ctx) => {
-    await ctx.reply('⏳ Updating Telegram menu...');
-    const success = await setBotCommands();
-    if (success) {
-        await ctx.reply('✅ Menu updated! Restart Telegram app.');
-    } else {
-        await ctx.reply('❌ Error updating menu.');
+// --- COMMAND: /ACCOUNT ---
+bot.command('account', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    let lang = 'en';
+    let modelKey = 'deepseek'; 
+    
+    // Получаем данные из базы
+    try { 
+        if (store.getUserLang) lang = await store.getUserLang(userId) || 'en'; 
+        if (store.getUserModel) modelKey = await store.getUserModel(userId) || 'deepseek';
+    } catch(e) {}
+
+    // Ищем красивое название модели
+    let modelName = modelKey;
+    // Пробуем найти в списке моделей
+    if (GPT_MODELS) {
+       const m = GPT_MODELS.find(x => x.key === modelKey);
+       if (m) modelName = m.label[lang] || m.label.en || modelKey;
     }
+
+    // Текстовки для разных языков (структура сохранена как в запросе)
+    let text = "";
+    if (lang === 'ru') {
+        text = `👤 ID Пользователя: ${userId}
+⭐ Тип подписки: 🆓 Free
+📆 Действует до: -
+💳 Метод оплаты: -
+---------------------------
+⌨️ Текстовые генерации (24 ч): 10
+🖼️ Картинок осталось (мес): 1
+🧠 Claude токены: 0 /claude
+🎸 Suno песни (мес): 0
+🎬 Видео: 0
+📚 Академические запросы: 0 /academic
+---------------------------
+⌨️ Доп. текстовые генерации: 0
+🌅 Доп. запросы изображений: 0
+🎸 Доп. Suno песни: 0
+🎬 Доп. видео: 0
+---------------------------
+🤖 GPT модель: ${modelName} /model
+🎭 GPT-Роль: Обычный 🔁
+💬 Стиль общения: 🔁 Обычный (?)
+🎨 Креативность: Высокий
+📝 Контекст: ✅ Вкл
+🔉 Голосовой ответ: ❌ Выкл
+⚙️ Настройки бота: /settings`;
+    } else if (lang === 'ro') {
+        text = `👤 ID Utilizator: ${userId}
+⭐ Tip abonament: 🆓 Free
+---------------------------
+⌨️ Generări text (24h): 10
+🖼️ Imagini rămase (lună): 1
+🧠 Token-uri Claude: 0 /claude
+🎸 Piese Suno (lună): 0
+🎬 Video: 0
+📚 Cereri academice: 0 /academic
+---------------------------
+🤖 Model GPT: ${modelName} /model
+⚙️ Setări bot: /settings`;
+    } else {
+        text = `👤 User ID: ${userId}
+⭐ Subscription: 🆓 Free
+---------------------------
+⌨️ Text generations (24h): 10
+🖼️ Images left (mo): 1
+🧠 Claude tokens: 0 /claude
+🎸 Suno songs (mo): 0
+🎬 Video: 0
+📚 Academic req: 0 /academic
+---------------------------
+🤖 GPT Model: ${modelName} /model
+⚙️ Bot settings: /settings`;
+    }
+
+    // Кнопки
+    const btnSettings = lang === 'ro' ? '⚙️ Setări' : (lang === 'ru' ? '⚙️ Настройки' : '⚙️ Settings');
+    const btnPremium = lang === 'ro' ? '🚀 Cumpără Premium' : (lang === 'ru' ? '🚀 Купить Премиум' : '🚀 Buy Premium');
+
+    await ctx.reply(text, Markup.inlineKeyboard([
+        [Markup.button.callback(btnSettings, 'menu_settings')],
+        [Markup.button.callback(btnPremium, 'menu_premium')]
+    ]));
 });
 
 // --- SETUP LANGUAGE ---
@@ -157,7 +318,18 @@ bot.action('set_lang_ro', (ctx) => setupLanguage(ctx, 'ro'));
 bot.action('set_lang_en', (ctx) => setupLanguage(ctx, 'en'));
 bot.action('set_lang_ru', (ctx) => setupLanguage(ctx, 'ru'));
 
-// --- MENU COMMAND (FULL KEYBOARD FIX) ---
+// --- SETUP MENU (FORCE) ---
+bot.command('setup_menu', async (ctx) => {
+    await ctx.reply('⏳ Updating Telegram menu...');
+    const success = await setBotCommands();
+    if (success) {
+        await ctx.reply('✅ Menu updated! Restart Telegram app.');
+    } else {
+        await ctx.reply('❌ Error updating menu.');
+    }
+});
+
+// --- MENU COMMAND ---
 bot.command('menu', async (ctx) => {
     const userId = ctx.from.id.toString();
     let lang = 'en';
@@ -224,7 +396,6 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
 
-    // ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
     if (data === 'menu_main') {
         let lang = 'en';
         try { if (store.getUserLang) lang = await store.getUserLang(userId) || 'en'; } catch(e) {}
@@ -257,7 +428,16 @@ bot.on('callback_query', async (ctx) => {
   }
 });
 
-// --- COMMANDS ---
+// --- OTHER COMMANDS STUBS ---
+bot.command('premium', (ctx) => ctx.reply("💎 *Premium*\nСкоро здесь будет оплата.", { parse_mode: 'Markdown' }));
+bot.command('image', (ctx) => ctx.reply("🎨 *Image Gen*\nНапиши описание картинки...", { parse_mode: 'Markdown' }));
+bot.command('suno', (ctx) => ctx.reply("🎵 *Music*\nФункция в разработке.", { parse_mode: 'Markdown' }));
+bot.command('video', (ctx) => ctx.reply("🎬 *Video*\nФункция в разработке.", { parse_mode: 'Markdown' }));
+bot.command('academic', (ctx) => ctx.reply("🎓 *Academic*\nРежим для учебы включен.", { parse_mode: 'Markdown' }));
+bot.command('search', (ctx) => ctx.reply("🔍 *Search*\nНапиши запрос для поиска...", { parse_mode: 'Markdown' }));
+bot.command('settings', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
+bot.command('settingsbot', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
+bot.command('terms', (ctx) => ctx.reply("📄 *Terms*\nПравила использования.", { parse_mode: 'Markdown' }));
 bot.command('gpt', async (ctx) => ctx.reply('🤖 Use /menu -> AI Chat'));
 bot.command('model', handleModelCommand);
 bot.command('help', async (ctx) => ctx.reply(content.welcome.en));
@@ -290,4 +470,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-                                         
+          
