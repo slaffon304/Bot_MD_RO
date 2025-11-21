@@ -1,5 +1,6 @@
 export default async function handler(req, res) {
   // Защита по секрету (используй тот же SETUP_SECRET, что для /api/set-webhook)
+  // Если секрет не настроен в Vercel, можно временно убрать проверку или открыть просто так
   const secret = process.env.SETUP_SECRET || "";
   if (secret && req.query.secret !== secret) {
     return res.status(403).json({ ok: false, error: "FORBIDDEN" });
@@ -10,38 +11,58 @@ export default async function handler(req, res) {
 
   const url = `https://api.telegram.org/bot${token}/setMyCommands`;
 
-  // Команды "как на скрине" — двуязычные подписи в дефолтном наборе
-  const def = [
-    { command: "menu",  description: "Main menu / Главное меню" },
-    { command: "gpt",   description: "AI Chat / Диалог с ИИ" },
-    { command: "design",description: "AI Design / Дизайн с ИИ" },
-    { command: "audio", description: "AI Audio / Аудио с ИИ" },
-    { command: "video", description: "AI Video / Видео будущего" }
-  ];
-
-  // Чистые локализации (если язык клиента известен)
+  // 1. СПИСОК НА АНГЛИЙСКОМ (Default)
   const en = [
-    { command: "menu",  description: "Main menu" },
-    { command: "gpt",   description: "AI Chat" },
-    { command: "design",description: "AI Design" },
-    { command: "audio", description: "AI Audio" },
-    { command: "video", description: "AI Video" }
-  ];
-  const ru = [
-    { command: "menu",  description: "Главное меню" },
-    { command: "gpt",   description: "Диалог с ИИ" },
-    { command: "design",description: "Дизайн с ИИ" },
-    { command: "audio", description: "Аудио с ИИ" },
-    { command: "video", description: "Видео будущего" }
-  ];
-  const ro = [
-    { command: "menu",  description: "Meniu principal" },
-    { command: "gpt",   description: "Chat AI" },
-    { command: "design",description: "Design AI" },
-    { command: "audio", description: "Audio AI" },
-    { command: "video", description: "Video AI" }
+    { command: "start", description: "Restart Bot" },
+    { command: "info", description: "What bot can do" },
+    { command: "account", description: "My Account" },
+    { command: "premium", description: "Premium Subscription" },
+    { command: "clear", description: "Delete Context" },
+    { command: "image", description: "Image Generation" },
+    { command: "suno", description: "Create Music" },
+    { command: "video", description: "Create Video" },
+    { command: "academic", description: "Academic Service" },
+    { command: "search", description: "Internet Search" },
+    { command: "settings", description: "Bot Settings" },
+    { command: "help", description: "Main Commands" },
+    { command: "terms", description: "User Agreement" }
   ];
 
+  // 2. СПИСОК НА РУССКОМ
+  const ru = [
+    { command: "start", description: "Перезапуск" },
+    { command: "info", description: "Что умеет бот" },
+    { command: "account", description: "Мой аккаунт" },
+    { command: "premium", description: "Премиум подписка" },
+    { command: "clear", description: "Сброс контекста" },
+    { command: "image", description: "Генерация фото" },
+    { command: "suno", description: "Создать музыку" },
+    { command: "video", description: "Создать видео" },
+    { command: "academic", description: "Учеба и Рефераты" },
+    { command: "search", description: "Поиск в интернете" },
+    { command: "settings", description: "Настройки" },
+    { command: "help", description: "Главные команды" },
+    { command: "terms", description: "Соглашение" }
+  ];
+
+  // 3. СПИСОК НА РУМЫНСКОМ
+  const ro = [
+    { command: "start", description: "Repornire" },
+    { command: "info", description: "Ce poate botul" },
+    { command: "account", description: "Contul meu" },
+    { command: "premium", description: "Abonament Premium" },
+    { command: "clear", description: "Șterge context" },
+    { command: "image", description: "Generare foto" },
+    { command: "suno", description: "Creează muzică" },
+    { command: "video", description: "Creează video" },
+    { command: "academic", description: "Studii și Referate" },
+    { command: "search", description: "Căutare web" },
+    { command: "settings", description: "Setări" },
+    { command: "help", description: "Comenzi principale" },
+    { command: "terms", description: "Termeni" }
+  ];
+
+  // Функция отправки в Telegram
   async function setCmds(commands, language_code, scope = { type: "all_private_chats" }) {
     const body = { commands, scope };
     if (language_code) body.language_code = language_code;
@@ -56,9 +77,9 @@ export default async function handler(req, res) {
 
   try {
     const results = [];
-    // Дефолтный набор с двуязычными подписями
-    results.push(await setCmds(def, undefined));
-    // Локализации
+    // Устанавливаем дефолтный список (English)
+    results.push(await setCmds(en, undefined));
+    // Устанавливаем локализации
     results.push(await setCmds(en, "en"));
     results.push(await setCmds(ru, "ru"));
     results.push(await setCmds(ro, "ro"));
@@ -67,4 +88,5 @@ export default async function handler(req, res) {
   } catch (e) {
     return res.status(200).json({ ok: false, error: String(e) });
   }
-    }
+      }
+  
