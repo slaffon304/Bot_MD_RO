@@ -1,6 +1,6 @@
 /**
  * Webhook handler
- * UPD: Полное меню команд (/menu) + Жесткое обновление системного меню
+ * UPD: Полное меню команд (/menu) + Жесткое обновление системного меню + Обработчики команд
  */
 
 const { Telegraf, Markup } = require('telegraf');
@@ -83,7 +83,6 @@ const setBotCommands = async () => {
 
 // --- START ---
 bot.command('start', async (ctx) => {
-  // Обновляем меню при каждом старте
   setBotCommands();
 
   await ctx.reply(content.lang_select, Markup.inlineKeyboard([
@@ -95,19 +94,7 @@ bot.command('start', async (ctx) => {
   ]));
 });
 
-// --- SETUP MENU (FORCE) ---
-bot.command('setup_menu', async (ctx) => {
-    await ctx.reply('⏳ Updating Telegram menu...');
-    const success = await setBotCommands();
-    if (success) {
-        await ctx.reply('✅ Menu updated! Restart Telegram app.');
-    } else {
-        await ctx.reply('❌ Error updating menu.');
-    }
-});
-
-// --- HANDLERS FOR MENU BUTTONS (НОВЫЕ) ---
-// Добавил заглушки, чтобы кнопки работали. Позже заменим на логику.
+// --- HANDLERS FOR MENU COMMANDS (ЧТОБЫ КНОПКИ РАБОТАЛИ) ---
 bot.command('info', (ctx) => ctx.reply("🤖 *Info*\nЯ могу искать информацию, генерировать фото, музыку и код.", { parse_mode: 'Markdown' }));
 bot.command('account', (ctx) => ctx.reply(`👤 *Account*\nID: \`${ctx.from.id}\`\nStatus: Free User`, { parse_mode: 'Markdown' }));
 bot.command('premium', (ctx) => ctx.reply("💎 *Premium*\nСкоро здесь будет оплата.", { parse_mode: 'Markdown' }));
@@ -120,6 +107,17 @@ bot.command('settings', (ctx) => ctx.reply("⚙️ *Settings*\nИспользу�
 bot.command('settingsbot', (ctx) => ctx.reply("⚙️ *Settings*\nИспользуй кнопку меню для настроек.", { parse_mode: 'Markdown' }));
 bot.command('terms', (ctx) => ctx.reply("📄 *Terms*\nПравила использования.", { parse_mode: 'Markdown' }));
 
+
+// --- SETUP MENU (FORCE) ---
+bot.command('setup_menu', async (ctx) => {
+    await ctx.reply('⏳ Updating Telegram menu...');
+    const success = await setBotCommands();
+    if (success) {
+        await ctx.reply('✅ Menu updated! Restart Telegram app.');
+    } else {
+        await ctx.reply('❌ Error updating menu.');
+    }
+});
 
 // --- SETUP LANGUAGE ---
 const setupLanguage = async (ctx, langCode) => {
@@ -226,6 +224,7 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
 
+    // ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
     if (data === 'menu_main') {
         let lang = 'en';
         try { if (store.getUserLang) lang = await store.getUserLang(userId) || 'en'; } catch(e) {}
@@ -291,4 +290,4 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-      
+                                         
