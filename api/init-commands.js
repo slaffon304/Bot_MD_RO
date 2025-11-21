@@ -1,6 +1,5 @@
 export default async function handler(req, res) {
-  // Защита по секрету (используй тот же SETUP_SECRET, что для /api/set-webhook)
-  // Если секрет не настроен в Vercel, можно временно убрать проверку или открыть просто так
+  // Защита по секрету
   const secret = process.env.SETUP_SECRET || "";
   if (secret && req.query.secret !== secret) {
     return res.status(403).json({ ok: false, error: "FORBIDDEN" });
@@ -11,55 +10,55 @@ export default async function handler(req, res) {
 
   const url = `https://api.telegram.org/bot${token}/setMyCommands`;
 
-  // 1. СПИСОК НА АНГЛИЙСКОМ (Default)
+  // 1. СПИСОК НА АНГЛИЙСКОМ (Default + EN)
   const en = [
-    { command: "start", description: "Restart Bot" },
-    { command: "info", description: "What bot can do" },
-    { command: "account", description: "My Account" },
-    { command: "premium", description: "Premium Subscription" },
-    { command: "clear", description: "Delete Context" },
-    { command: "image", description: "Image Generation" },
-    { command: "suno", description: "Create Music" },
-    { command: "video", description: "Create Video" },
-    { command: "academic", description: "Academic Service" },
-    { command: "search", description: "Internet Search" },
-    { command: "settings", description: "Bot Settings" },
-    { command: "help", description: "Main Commands" },
-    { command: "terms", description: "User Agreement" }
+    { command: "start", description: "🔄 Restart Bot" },
+    { command: "info", description: "🤖 What bot can do" },
+    { command: "account", description: "👤 My Account" },
+    { command: "premium", description: "⭐️ Premium Subscription" },
+    { command: "clear", description: "🗑️ Delete Context" },
+    { command: "image", description: "🖼️ Image Generation" },
+    { command: "suno", description: "🎸 Create Music" },
+    { command: "video", description: "🎬 Create Video" },
+    { command: "academic", description: "📚 Academic Service" },
+    { command: "search", description: "🌐 Internet Search" },
+    { command: "settings", description: "⚙️ Bot Settings" },
+    { command: "help", description: "⌨️ Main Commands" },
+    { command: "terms", description: "📜 User Agreement" }
   ];
 
   // 2. СПИСОК НА РУССКОМ
   const ru = [
-    { command: "start", description: "Перезапуск" },
-    { command: "info", description: "Что умеет бот" },
-    { command: "account", description: "Мой аккаунт" },
-    { command: "premium", description: "Премиум подписка" },
-    { command: "clear", description: "Сброс контекста" },
-    { command: "image", description: "Генерация фото" },
-    { command: "suno", description: "Создать музыку" },
-    { command: "video", description: "Создать видео" },
-    { command: "academic", description: "Учеба и Рефераты" },
-    { command: "search", description: "Поиск в интернете" },
-    { command: "settings", description: "Настройки" },
-    { command: "help", description: "Главные команды" },
-    { command: "terms", description: "Соглашение" }
+    { command: "start", description: "🔄 Перезапуск" },
+    { command: "info", description: "🤖 Что умеет бот" },
+    { command: "account", description: "👤 Мой аккаунт" },
+    { command: "premium", description: "⭐️ Премиум подписка" },
+    { command: "clear", description: "🗑️ Сброс контекста" },
+    { command: "image", description: "🖼️ Генерация фото" },
+    { command: "suno", description: "🎸 Создать музыку" },
+    { command: "video", description: "🎬 Создать видео" },
+    { command: "academic", description: "📚 Учеба и Рефераты" },
+    { command: "search", description: "🌐 Поиск в интернете" },
+    { command: "settings", description: "⚙️ Настройки" },
+    { command: "help", description: "⌨️ Главные команды" },
+    { command: "terms", description: "📜 Соглашение" }
   ];
 
   // 3. СПИСОК НА РУМЫНСКОМ
   const ro = [
-    { command: "start", description: "Repornire" },
-    { command: "info", description: "Ce poate botul" },
-    { command: "account", description: "Contul meu" },
-    { command: "premium", description: "Abonament Premium" },
-    { command: "clear", description: "Șterge context" },
-    { command: "image", description: "Generare foto" },
-    { command: "suno", description: "Creează muzică" },
-    { command: "video", description: "Creează video" },
-    { command: "academic", description: "Studii și Referate" },
-    { command: "search", description: "Căutare web" },
-    { command: "settings", description: "Setări" },
-    { command: "help", description: "Comenzi principale" },
-    { command: "terms", description: "Termeni" }
+    { command: "start", description: "🔄 Repornire" },
+    { command: "info", description: "🤖 Ce poate botul" },
+    { command: "account", description: "👤 Contul meu" },
+    { command: "premium", description: "⭐️ Abonament Premium" },
+    { command: "clear", description: "🗑️ Șterge context" },
+    { command: "image", description: "🖼️ Generare foto" },
+    { command: "suno", description: "🎸 Creează muzică" },
+    { command: "video", description: "🎬 Creează video" },
+    { command: "academic", description: "📚 Studii și Referate" },
+    { command: "search", description: "🌐 Căutare web" },
+    { command: "settings", description: "⚙️ Setări" },
+    { command: "help", description: "⌨️ Comenzi principale" },
+    { command: "terms", description: "📜 Termeni" }
   ];
 
   // Функция отправки в Telegram
@@ -89,4 +88,3 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok: false, error: String(e) });
   }
       }
-  
