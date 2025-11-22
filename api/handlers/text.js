@@ -23,10 +23,12 @@ const ASK_FILE_MSG = {
     en: "🧐 I see the file! What should I do with it? (Describe it, solve a problem, or translate text?)"
 };
 
-// --- КОНФИГУРАЦИЯ ЛИМИТОВ ---
+// --- КОНФИГУРАЦИЯ ---
 const DAILY_LIMIT = 10;
+// ID вашей модели для картинок
+const IMAGE_MODEL_ID = 'openai/gpt-5-image-mini';
 
-// Список ID бесплатных моделей (за них не списываем лимит)
+// Бесплатные модели
 const FREE_MODEL_IDS = [
     'google/gemini-2.0-flash-exp:free',
     'deepseek/deepseek-chat',
@@ -36,8 +38,7 @@ const FREE_MODEL_IDS = [
     'google/gemini-2.0-flash-lite-preview-02-05:free'
 ];
 
-// --- ФУНКЦИИ ЛИМИТОВ ---
-
+// --- ЛИМИТЫ ---
 async function checkLimit(userId) {
     if (!store.redis) return true; 
     const today = new Date().toISOString().split('T')[0];
@@ -62,20 +63,21 @@ function getModelNiceName(key, lang = 'ru') {
     return m.label[lang] || m.label.en || m.key;
 }
 
-// --- СЕРВИС OpenRouter ---
+// --- ЗАПРОС К OPENROUTER ---
 async function openRouterRequest(messages, modelId) {
     if (!OPENROUTER_API_KEY) return "NO_KEY";
     try {
-        // Формируем тело запроса
         const body = {
             "model": modelId,
             "messages": messages
         };
 
-        // ВАЖНО: Добавляем temperature только если это НЕ картинка
-        // Модели картинок падают с ошибкой 400, если передать temperature
-        if (!modelId.includes('image') && !modelId.includes('dall-e') && !modelId.includes('flux')) {
-            body.temperature = 0.7;
+        // ВАЖНО: НЕ отправляем temperature для gpt-5-image-mini и других графических моделей
+        // Это исправит ошибку "Unsupported parameter: temperature"
+        const isImageModel = modelId.includes('image') || modelId.includes('dall-e') || modelId.includes('flux');
+        
+        if (!isImageModel) {
+            body.temperature = 0.7; // Добавляем только для текста
         }
 
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -92,14 +94,16 @@ async function openRouterRequest(messages, modelId) {
         if (!response.ok) {
             const errText = await response.text();
             console.error("OpenRouter Error:", errText);
-            return `ERROR: ${response.status} - ${errText}`; 
+            return `API ERROR: ${response.status} - ${errText}`; 
         }
         
         const data = await response.json();
+        if (!data.choices || data.choices.length === 0) return "API ERROR: Empty response";
+        
         return data.choices[0].message.content;
     } catch (error) {
         console.error("Fetch Error:", error);
-        return "ERROR: Connection failed";
+        return `NETWORK ERROR: ${error.message}`;
     }
 }
 
@@ -121,7 +125,7 @@ async function handleTextMessage(ctx, textInput) {
     await ctx.sendChatAction('typing');
 
     try {
-        // 1. ЗАГРУЗКА
+        // 1. Данные юзера
         let savedModel = 'deepseek'; 
         let savedLang = 'ru';
         let userMode = 'chat';
@@ -139,11 +143,10 @@ async function handleTextMessage(ctx, textInput) {
 
         const lang = savedLang;
 
-        // ----------------------------------------------------
-        // ВЕТКА 1: РЕЖИМ РИСОВАНИЯ (/image)
-        // ----------------------------------------------------
+        // 2. РЕЖИМ РИСОВАНИЯ (/image)
         if (userMode === 'image') {
             if (text) {
+                // Проверка лимита
                 const canDraw = await checkLimit(userId);
                 if (!canDraw) {
                     const limitMsg = (lang === 'ru') 
@@ -155,36 +158,35 @@ async function handleTextMessage(ctx, textInput) {
 
                 const waitMsg = await ctx.reply("🎨 Drawing...");
                 
-                // Используем модель, которую вы указали
-                const imageModel = 'openai/gpt-5-image-mini'; 
-                
+                // Запрос к GPT-5 Image Mini
                 const prompt = `Generate an image: ${text}`;
-                const result = await openRouterRequest([{ role: "user", content: prompt }], imageModel);
+                const result = await openRouterRequest([{ role: "user", content: prompt }], IMAGE_MODEL_ID);
 
                 try { await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch(e){}
 
-                if (!result || result.startsWith("ERROR")) {
-                    await ctx.reply(`⚠️ Image Error: ${result}`);
+                // Обработка ошибок
+                if (!result || result.startsWith("API ERROR") || result.startsWith("NETWORK ERROR")) {
+                    await ctx.reply(`⚠️ Generation Error:\n\`${result}\``, { parse_mode: 'Markdown' });
                     return;
                 }
 
-                // Ищем ссылку Markdown
-                const urlMatch = result.match(/\((https?:\/\/[^\)]+)\)/);
+                // GPT-5 Image обычно возвращает ссылку в Markdown или просто URL
+                // Пытаемся найти ссылку
+                const urlMatch = result.match(/\((https?:\/\/[^\)]+)\)/) || result.match(/(https?:\/\/[^\s]+)/);
                 
                 if (urlMatch && urlMatch[1]) {
                     const imageUrl = urlMatch[1];
                     await ctx.replyWithPhoto(imageUrl, { caption: `🖼 Generated by GPT-5 Image Mini` });
                     await incrementLimit(userId);
                 } else {
-                    await ctx.reply(result); 
+                    // Если ссылки нет, возможно модель вернула описание или текст
+                    await ctx.reply(result);
                 }
                 return; 
             }
         }
 
-        // ----------------------------------------------------
-        // ВЕТКА 2: ФАЙЛЫ
-        // ----------------------------------------------------
+        // 3. ОБРАБОТКА ФАЙЛОВ (Если прислали фото/видео)
         let fileUrl = null;
         let fileType = 'text'; 
         const pendingKey = `pending_file:${userId}`;
@@ -220,13 +222,12 @@ async function handleTextMessage(ctx, textInput) {
 
         if (!text && !fileUrl) return;
 
-        // ----------------------------------------------------
-        // ВЕТКА 3: ЧАТ
-        // ----------------------------------------------------
+        // 4. РЕЖИМ ЧАТА (Текстовый ответ)
         let modelToUse = savedModel;
         const pmodel = resolvePModelByKey(modelToUse);
         const realModelId = pmodel || 'deepseek/deepseek-chat';
         
+        // Авто-выбор для файлов
         if (fileType === 'audio') modelToUse = getModelForTask('audio_input');
         else if (fileType === 'video') modelToUse = getModelForTask('video_input');
         else if (fileType === 'doc') modelToUse = getModelForTask('doc_heavy');
@@ -236,6 +237,7 @@ async function handleTextMessage(ctx, textInput) {
              }
         }
 
+        // Проверка платности
         let isFreeModel = false;
         if (FREE_MODEL_IDS.includes(realModelId) || realModelId.includes(':free')) {
             isFreeModel = true;
@@ -279,7 +281,7 @@ async function handleTextMessage(ctx, textInput) {
 
         const aiResponse = await openRouterRequest(messagesToSend, realModelId);
 
-        if (!aiResponse || aiResponse.startsWith("ERROR")) { 
+        if (!aiResponse || aiResponse.startsWith("API ERROR") || aiResponse.startsWith("NETWORK ERROR")) { 
             await ctx.reply(`⚠️ AI Service Error: ${aiResponse}`); 
             return; 
         }
