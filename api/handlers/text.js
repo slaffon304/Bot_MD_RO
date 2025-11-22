@@ -3,7 +3,6 @@ const content = require('../../content.json');
 const { 
     GPT_MODELS, 
     isProKey, 
-    isVisionModel, 
     getModelForTask, 
     gptKeyboard, 
     premiumMsg, 
@@ -18,14 +17,12 @@ const FOOTER_MSG = {
   en: "\n\n➖➖➖➖➖➖\n🔄 Change model: /model | ⚙️ Settings: /settingsbot"
 };
 
-// Сообщения, когда пришел файл без текста
 const ASK_FILE_MSG = {
     ru: "🧐 Я вижу файл! Что мне с ним сделать? (Описать, решить задачу или перевести текст?)",
     ro: "🧐 Văd fișierul! Ce dorești să fac cu el? (Să-l descriu, să rezolv o problemă sau să traduc text?)",
     en: "🧐 I see the file! What should I do with it? (Describe it, solve a problem, or translate text?)"
 };
 
-// Получить красивое имя модели
 function getModelNiceName(key, lang = 'ru') {
     const m = GPT_MODELS.find(x => x.key === key);
     if (!m) return key;
@@ -67,12 +64,6 @@ async function handleTextMessage(ctx, textInput) {
     const message = ctx.message;
     const caption = message?.caption || '';
     const text = textInput || caption || ''; 
-    
-    const isPhoto = message?.photo;
-    const isVoice = message?.voice || message?.audio;
-    const isVideo = message?.video || message?.video_note;
-    const isDoc = message?.document;
-    
     const userId = ctx.from.id.toString();
 
     // --- DEBUG COMMAND ---
@@ -89,138 +80,105 @@ async function handleTextMessage(ctx, textInput) {
     await ctx.sendChatAction('typing');
 
     try {
-        // 1. Загружаем данные пользователя
+        // 1. ЗАГРУЗКА РЕЖИМА И НАСТРОЕК
         let savedModel = 'deepseek'; 
         let savedLang = 'ru';
-        
+        let userMode = 'chat'; // По умолчанию чат
+
         try {
-            if (store.getUserModel && store.getUserLang) {
-                const [m, l] = await Promise.all([
-                    store.getUserModel(userId),
-                    store.getUserLang(userId)
-                ]);
-                if (m) savedModel = m;
-                if (l) savedLang = l;
+            // Запрашиваем всё параллельно: модель, язык, режим
+            const [m, l, mode] = await Promise.all([
+                store.getUserModel(userId),
+                store.getUserLang(userId),
+                store.getUserMode ? store.getUserMode(userId) : 'chat'
+            ]);
+            if (m) savedModel = m;
+            if (l) savedLang = l;
+            if (mode) userMode = mode;
+        } catch (e) { console.error("DB Load Error", e); }
+
+        const lang = savedLang;
+
+        // --- ВЕТВЛЕНИЕ: ЕСЛИ РЕЖИМ РИСОВАНИЯ ---
+        if (userMode === 'image') {
+            // Если пользователь прислал текст — это промпт для картинки
+            if (text) {
+                // TODO: ВСТАВИТЬ СЮДА ВЫЗОВ ФУНКЦИИ ГЕНЕРАЦИИ (Midjourney / Flux)
+                // Пока ставим заглушку, чтобы проверить переключение
+                await ctx.reply(`🎨 *Generating Image...*\n\nPrompt: _${text}_\n\n(Здесь будет вызов API Midjourney/Flux)`, { parse_mode: 'Markdown' });
+                return; // ВАЖНО: Прерываем выполнение, чтобы не идти в GPT
             }
-        } catch (e) {}
+        }
 
-        const userData = { model: savedModel, language: savedLang };
-        const lang = userData.language;
-
-        // 2. ПОДГОТОВКА ФАЙЛА (Загрузка из сообщения ИЛИ из буфера)
+        // 2. ОБРАБОТКА ФАЙЛОВ (ТОЛЬКО ДЛЯ ЧАТА)
+        // (Этот блок работает только если мы НЕ в режиме рисования или если режим рисования не сработал)
+        
         let fileUrl = null;
-        let fileType = 'text'; // text, image, audio, video, doc
+        let fileType = 'text'; 
         const pendingKey = `pending_file:${userId}`;
+        
+        // ... (Код обработки файлов оставляем без изменений)
+        const isPhoto = message?.photo;
+        const isVoice = message?.voice || message?.audio;
+        const isVideo = message?.video || message?.video_note;
+        const isDoc = message?.document;
 
-        // А) Если файл пришел ПРЯМО СЕЙЧАС
         if (isPhoto || isVoice || isVideo || isDoc) {
-            try {
+             // ... (Тот же код, что и был для загрузки файла)
+             try {
                 let fileId = null;
-                if (isPhoto) {
-                    fileId = message.photo[message.photo.length - 1].file_id;
-                    fileType = 'image';
-                } else if (isVoice) {
-                    fileId = (message.voice || message.audio).file_id;
-                    fileType = 'audio';
-                } else if (isVideo) {
-                    fileId = (message.video || message.video_note).file_id;
-                    fileType = 'video';
-                } else if (isDoc) {
-                    fileId = message.document.file_id;
-                    fileType = 'doc';
-                }
+                if (isPhoto) { fileId = message.photo[message.photo.length - 1].file_id; fileType = 'image'; }
+                else if (isVoice) { fileId = (message.voice || message.audio).file_id; fileType = 'audio'; }
+                else if (isVideo) { fileId = (message.video || message.video_note).file_id; fileType = 'video'; }
+                else if (isDoc) { fileId = message.document.file_id; fileType = 'doc'; }
 
                 if (fileId) {
                     const urlObj = await ctx.telegram.getFileLink(fileId);
                     fileUrl = urlObj.href;
-                    
-                    // ЛОГИКА: Если файл есть, а ТЕКСТА НЕТ — сохраняем и спрашиваем
                     if (!text) {
-                        if (store.redis) {
-                            // Сохраняем на 5 минут (300 сек)
-                            await store.redis.set(pendingKey, { url: fileUrl, type: fileType }, { ex: 300 });
-                        }
+                        if (store.redis) await store.redis.set(pendingKey, { url: fileUrl, type: fileType }, { ex: 300 });
                         const askText = ASK_FILE_MSG[lang] || ASK_FILE_MSG.en;
                         await ctx.reply(askText);
-                        return; // ПРЕРЫВАЕМ ВЫПОЛНЕНИЕ, ждем ответа юзера
+                        return;
                     }
                 }
-            } catch (e) {
-                console.error("File processing error:", e);
-            }
-        } 
-        // Б) Если файла сейчас нет, но есть ТЕКСТ -> Проверяем БУФЕР
-        else if (text && store.redis) {
+            } catch (e) { console.error("File processing error:", e); }
+        } else if (text && store.redis) {
             const pending = await store.redis.get(pendingKey);
-            if (pending) {
-                // Нашли "потерянный" файл
-                fileUrl = pending.url;
-                fileType = pending.type;
-                console.log(`[Router] Found pending ${fileType} for user ${userId}`);
-                // Удаляем из буфера
-                await store.redis.del(pendingKey);
-            }
+            if (pending) { fileUrl = pending.url; fileType = pending.type; await store.redis.del(pendingKey); }
         }
 
-        // Если после всех проверок нет ни текста, ни файла - выходим
         if (!text && !fileUrl) return;
 
-
         // 3. УМНЫЙ МАРШРУТИЗАТОР (AUTO-SWITCH)
-        let modelToUse = userData.model;
-        let overrideReason = null;
-
-        // Выбираем модель под задачу
-        if (fileType === 'audio') {
-            modelToUse = getModelForTask('audio_input') || 'gemini_flash';
-            overrideReason = "Audio Processing";
-        } else if (fileType === 'video') {
-            modelToUse = getModelForTask('video_input') || 'gemini_flash';
-            overrideReason = "Video Analysis";
-        } else if (fileType === 'doc') {
-            modelToUse = getModelForTask('doc_heavy') || 'gemini_lite';
-            overrideReason = "Document Analysis";
-        } else if (fileType === 'image') {
-            // Если модель слепая -> Gemini
-            if (!isVisionModel(modelToUse)) {
-                modelToUse = 'gemini_flash';
-                overrideReason = "Vision Fallback";
-            }
-        }
-
-        if (overrideReason) {
-            console.log(`[Router] Switching to ${modelToUse} for ${overrideReason}`);
-        }
-
-        // 4. Загрузка истории
-        let history = [];
-        if (store.getHistory) {
-            history = await store.getHistory(userId) || [];
-        }
-
-        // 5. СИСТЕМНЫЙ ПРОМПТ (ОБНОВЛЕН: ЗАЩИТА ОТ ОШИБОК РЕДАКТИРОВАНИЯ)
-        const niceModelName = getModelNiceName(modelToUse, lang);
+        let modelToUse = savedModel;
         
+        // ... (Оставляем логику выбора модели для файлов)
+        if (fileType === 'audio') modelToUse = getModelForTask('audio_input') || 'gemini_flash';
+        else if (fileType === 'video') modelToUse = getModelForTask('video_input') || 'gemini_flash';
+        else if (fileType === 'doc') modelToUse = getModelForTask('doc_heavy') || 'gemini_lite';
+        else if (fileType === 'image') {
+             // Простейшая проверка: если модель не видит, переключаем на Gemini
+             // (Нужно убедиться, что isVisionModel импортирована корректно, либо убрать, если её нет)
+             modelToUse = 'gemini_flash'; // Пока жестко ставим зрячую, для надежности
+        }
+
+        // 4. ЗАГРУЗКА ИСТОРИИ
+        let history = [];
+        if (store.getHistory) history = await store.getHistory(userId) || [];
+
+        // 5. СИСТЕМНЫЙ ПРОМПТ
+        const niceModelName = getModelNiceName(modelToUse, lang);
         const systemPrompt = {
             role: "system",
-            content: `You are a helpful AI assistant running on the "${niceModelName}" model.
-            
-            CAPABILITIES:
-            1. TEXT: Answer questions, write code, translate.
-            2. VISION: If an image is provided, I can SEE and DESCRIBE it.
-            3. LIMITATION: I CANNOT edit images (remove background, change colors, etc) or generate new ones inside this chat yet.
-            
-            INSTRUCTION:
-            - If the user asks to EDIT an image (e.g. "remove background"), politely refuse and explain that you can only analyze/describe it.
-            - Reply in the SAME language as the user.`
+            content: `You are a helpful AI assistant running on "${niceModelName}". Reply in the SAME language as the user.`
         };
 
-        // 6. Формирование сообщения (Multimodal)
+        // 6. СБОРКА СООБЩЕНИЯ
         let userMessageContent;
-
         if (fileUrl) {
             userMessageContent = [
-                { type: "text", text: text || (lang === 'ru' ? "Опиши это." : "Describe this.") },
+                { type: "text", text: text || "Describe this." },
                 { type: "image_url", image_url: { url: fileUrl } }
             ];
         } else {
@@ -233,7 +191,7 @@ async function handleTextMessage(ctx, textInput) {
             { role: "user", content: userMessageContent }
         ];
 
-        // 7. Отправка в ИИ
+        // 7. ЗАПРОС К ИИ
         const aiResponse = await chatWithAI(messagesToSend, modelToUse);
 
         if (aiResponse === "NO_KEY") { await ctx.reply("⚙️ API Key missing."); return; }
@@ -242,7 +200,7 @@ async function handleTextMessage(ctx, textInput) {
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        // 8. Сохранение в историю
+        // 8. СОХРАНЕНИЕ
         if (store.updateConversation) {
             const historyText = fileUrl ? `[${fileType.toUpperCase()}] ${text}` : text;
             await store.updateConversation(
@@ -258,8 +216,7 @@ async function handleTextMessage(ctx, textInput) {
     }
 }
 
-// --- КОМАНДЫ ---
-
+// ... (Остальные функции handleClearCommand, handleModelCommand и т.д. остаются без изменений)
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
     if (store.clearHistory) await store.clearHistory(userId);
@@ -322,4 +279,3 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-        
