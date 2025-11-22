@@ -23,17 +23,44 @@ const ASK_FILE_MSG = {
     en: "🧐 I see the file! What should I do with it? (Describe it, solve a problem, or translate text?)"
 };
 
+// --- ЛИМИТЫ (10 запросов в день) ---
+const DAILY_LIMIT = 10;
+
+async function checkAndIncrementLimit(userId) {
+    if (!store.redis) return true; // Если Redis нет, лимитов нет (бесконечно)
+    
+    // Получаем текущую дату (чтобы сбрасывать каждый день)
+    const today = new Date().toISOString().split('T')[0]; // 2023-10-25
+    const key = `usage:${today}:${userId}`;
+    
+    // Получаем текущее использование
+    let current = await store.redis.get(key);
+    current = parseInt(current) || 0;
+
+    if (current >= DAILY_LIMIT) {
+        return false; // Лимит исчерпан
+    }
+
+    // Увеличиваем счетчик (+1) и ставим жизнь ключа 24 часа
+    await store.redis.incr(key);
+    await store.redis.expire(key, 86400); 
+    
+    // Обновляем общий счетчик в профиле (для команды /account)
+    await store.redis.incr(`usage:text:${userId}`); 
+    
+    return true;
+}
+
+// --- ПОЛУЧЕНИЕ КРАСИВОГО ИМЕНИ ---
 function getModelNiceName(key, lang = 'ru') {
     const m = GPT_MODELS.find(x => x.key === key);
     if (!m) return key;
     return m.label[lang] || m.label.en || m.key;
 }
 
-// --- AI SERVICE ---
-async function chatWithAI(messages, modelKey) {
-    if (!OPENROUTER_API_KEY) return "NO_KEY";
-    const pmodel = resolvePModelByKey(modelKey) || 'deepseek/deepseek-chat';
-    
+// --- СЕРВИС ГЕНЕРАЦИИ (Chat & Image) ---
+async function openRouterRequest(messages, modelId) {
+    if (!OPENROUTER_API_KEY) return null;
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
@@ -44,18 +71,23 @@ async function chatWithAI(messages, modelKey) {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                "model": pmodel,
+                "model": modelId,
                 "messages": messages,
                 "temperature": 0.7
             })
         });
 
-        if (!response.ok) throw new Error(await response.text());
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error("OpenRouter Error:", errText);
+            return "ERROR";
+        }
+        
         const data = await response.json();
         return data.choices[0].message.content;
     } catch (error) {
-        console.error("AI Error:", error);
-        return null;
+        console.error("Fetch Error:", error);
+        return "ERROR";
     }
 }
 
@@ -66,27 +98,24 @@ async function handleTextMessage(ctx, textInput) {
     const text = textInput || caption || ''; 
     const userId = ctx.from.id.toString();
 
-    // --- DEBUG COMMAND ---
+    // --- DEBUG ---
     if (text === '/debug') {
         if (store.getDebugData) {
             const debugInfo = await store.getDebugData(userId);
             await ctx.reply(`🐞 DEBUG INFO:\n\n${debugInfo}`);
-        } else {
-            await ctx.reply('Debug function not found.');
-        }
+        } else await ctx.reply('Debug not found.');
         return;
     }
 
     await ctx.sendChatAction('typing');
 
     try {
-        // 1. ЗАГРУЗКА РЕЖИМА И НАСТРОЕК
+        // 1. ЗАГРУЗКА ДАННЫХ
         let savedModel = 'deepseek'; 
         let savedLang = 'ru';
-        let userMode = 'chat'; // По умолчанию чат
+        let userMode = 'chat';
 
         try {
-            // Запрашиваем всё параллельно: модель, язык, режим
             const [m, l, mode] = await Promise.all([
                 store.getUserModel(userId),
                 store.getUserLang(userId),
@@ -99,32 +128,68 @@ async function handleTextMessage(ctx, textInput) {
 
         const lang = savedLang;
 
-        // --- ВЕТВЛЕНИЕ: ЕСЛИ РЕЖИМ РИСОВАНИЯ ---
+        // 2. ПРОВЕРКА ЛИМИТОВ (ГЛОБАЛЬНАЯ)
+        const isAllowed = await checkAndIncrementLimit(userId);
+        if (!isAllowed) {
+            const limitMsg = (lang === 'ru') 
+                ? "⛔️ **Лимит исчерпан**\nВы использовали 10 бесплатных запросов на сегодня.\nКупите /premium для безлимита."
+                : "⛔️ **Daily Limit Reached**\nYou used 10 free requests today.\nBuy /premium for unlimited access.";
+            await ctx.reply(limitMsg, { parse_mode: 'Markdown' });
+            return;
+        }
+
+        // --- ВЕТКА: РИСОВАНИЕ ---
         if (userMode === 'image') {
-            // Если пользователь прислал текст — это промпт для картинки
             if (text) {
-                // TODO: ВСТАВИТЬ СЮДА ВЫЗОВ ФУНКЦИИ ГЕНЕРАЦИИ (Midjourney / Flux)
-                // Пока ставим заглушку, чтобы проверить переключение
-                await ctx.reply(`🎨 *Generating Image...*\n\nPrompt: _${text}_\n\n(Здесь будет вызов API Midjourney/Flux)`, { parse_mode: 'Markdown' });
-                return; // ВАЖНО: Прерываем выполнение, чтобы не идти в GPT
+                // Отправляем уведомление (без повтора промпта)
+                const waitMsg = await ctx.reply("🎨 Generating...");
+                
+                // Маппинг моделей для рисования
+                // gpt5mini (бесплатная) -> flux-1-schnell (быстрая и дешевая)
+                // flux (премиум) -> flux-1-dev (качественная)
+                let imageModel = 'black-forest-labs/flux-1-schnell'; 
+                
+                // Если пользователь выбрал другую модель в меню (логику добавим позже), можно менять здесь
+                
+                const prompt = `Generate an image: ${text}`;
+                
+                // Запрос к API
+                const result = await openRouterRequest([{ role: "user", content: prompt }], imageModel);
+
+                // Удаляем сообщение "Generating..."
+                try { await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch(e){}
+
+                if (!result || result === "ERROR") {
+                    await ctx.reply("⚠️ Image Generation Error. Try again.");
+                    return;
+                }
+
+                // Flux на OpenRouter возвращает ссылку на изображение в Markdown: ![image](url)
+                // Нам нужно вытащить URL
+                const urlMatch = result.match(/\((https?:\/\/[^\)]+)\)/);
+                
+                if (urlMatch && urlMatch[1]) {
+                    const imageUrl = urlMatch[1];
+                    await ctx.replyWithPhoto(imageUrl, { caption: `🖼 Generated by ${imageModel}` });
+                } else {
+                    // Если ссылка не нашлась, кидаем ответ текстом (иногда там описание ошибки)
+                    await ctx.reply(result);
+                }
+                return; 
             }
         }
 
-        // 2. ОБРАБОТКА ФАЙЛОВ (ТОЛЬКО ДЛЯ ЧАТА)
-        // (Этот блок работает только если мы НЕ в режиме рисования или если режим рисования не сработал)
-        
+        // 3. ОБРАБОТКА ФАЙЛОВ (CHAT MODE)
         let fileUrl = null;
         let fileType = 'text'; 
         const pendingKey = `pending_file:${userId}`;
         
-        // ... (Код обработки файлов оставляем без изменений)
         const isPhoto = message?.photo;
         const isVoice = message?.voice || message?.audio;
         const isVideo = message?.video || message?.video_note;
         const isDoc = message?.document;
 
         if (isPhoto || isVoice || isVideo || isDoc) {
-             // ... (Тот же код, что и был для загрузки файла)
              try {
                 let fileId = null;
                 if (isPhoto) { fileId = message.photo[message.photo.length - 1].file_id; fileType = 'image'; }
@@ -142,7 +207,7 @@ async function handleTextMessage(ctx, textInput) {
                         return;
                     }
                 }
-            } catch (e) { console.error("File processing error:", e); }
+            } catch (e) { console.error("File error:", e); }
         } else if (text && store.redis) {
             const pending = await store.redis.get(pendingKey);
             if (pending) { fileUrl = pending.url; fileType = pending.type; await store.redis.del(pendingKey); }
@@ -150,31 +215,32 @@ async function handleTextMessage(ctx, textInput) {
 
         if (!text && !fileUrl) return;
 
-        // 3. УМНЫЙ МАРШРУТИЗАТОР (AUTO-SWITCH)
+        // 4. МАРШРУТИЗАТОР (CHAT MODE)
         let modelToUse = savedModel;
+        const pmodel = resolvePModelByKey(modelToUse);
         
-        // ... (Оставляем логику выбора модели для файлов)
-        if (fileType === 'audio') modelToUse = getModelForTask('audio_input') || 'gemini_flash';
-        else if (fileType === 'video') modelToUse = getModelForTask('video_input') || 'gemini_flash';
-        else if (fileType === 'doc') modelToUse = getModelForTask('doc_heavy') || 'gemini_lite';
+        if (fileType === 'audio') modelToUse = getModelForTask('audio_input');
+        else if (fileType === 'video') modelToUse = getModelForTask('video_input');
+        else if (fileType === 'doc') modelToUse = getModelForTask('doc_heavy');
         else if (fileType === 'image') {
-             // Простейшая проверка: если модель не видит, переключаем на Gemini
-             // (Нужно убедиться, что isVisionModel импортирована корректно, либо убрать, если её нет)
-             modelToUse = 'gemini_flash'; // Пока жестко ставим зрячую, для надежности
+             // Если текущая модель не поддерживает зрение, переключаем на Gemini
+             // (Упрощенная проверка, можно улучшить)
+             if (!pmodel.includes('gpt-4o') && !pmodel.includes('gemini') && !pmodel.includes('claude-3-5')) {
+                 modelToUse = 'gemini_flash';
+             }
         }
 
-        // 4. ЗАГРУЗКА ИСТОРИИ
+        // 5. ИСТОРИЯ
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
-        // 5. СИСТЕМНЫЙ ПРОМПТ
+        // 6. ЗАПРОС
         const niceModelName = getModelNiceName(modelToUse, lang);
         const systemPrompt = {
             role: "system",
             content: `You are a helpful AI assistant running on "${niceModelName}". Reply in the SAME language as the user.`
         };
 
-        // 6. СБОРКА СООБЩЕНИЯ
         let userMessageContent;
         if (fileUrl) {
             userMessageContent = [
@@ -191,16 +257,16 @@ async function handleTextMessage(ctx, textInput) {
             { role: "user", content: userMessageContent }
         ];
 
-        // 7. ЗАПРОС К ИИ
-        const aiResponse = await chatWithAI(messagesToSend, modelToUse);
+        // Используем реальный ID модели
+        const realModelId = resolvePModelByKey(modelToUse) || 'deepseek/deepseek-chat';
+        const aiResponse = await openRouterRequest(messagesToSend, realModelId);
 
-        if (aiResponse === "NO_KEY") { await ctx.reply("⚙️ API Key missing."); return; }
-        if (!aiResponse) { await ctx.reply("⚠️ AI Service Error."); return; }
+        if (!aiResponse || aiResponse === "ERROR") { await ctx.reply("⚠️ AI Service Error."); return; }
 
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        // 8. СОХРАНЕНИЕ
+        // 7. СОХРАНЕНИЕ
         if (store.updateConversation) {
             const historyText = fileUrl ? `[${fileType.toUpperCase()}] ${text}` : text;
             await store.updateConversation(
@@ -216,7 +282,6 @@ async function handleTextMessage(ctx, textInput) {
     }
 }
 
-// ... (Остальные функции handleClearCommand, handleModelCommand и т.д. остаются без изменений)
 async function handleClearCommand(ctx) {
     const userId = ctx.from.id.toString();
     if (store.clearHistory) await store.clearHistory(userId);
@@ -279,3 +344,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
+        
