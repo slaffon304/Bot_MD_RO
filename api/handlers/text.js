@@ -23,44 +23,50 @@ const ASK_FILE_MSG = {
     en: "🧐 I see the file! What should I do with it? (Describe it, solve a problem, or translate text?)"
 };
 
-// --- ЛИМИТЫ (10 запросов в день) ---
+// --- КОНФИГУРАЦИЯ ЛИМИТОВ ---
 const DAILY_LIMIT = 10;
 
-async function checkAndIncrementLimit(userId) {
-    if (!store.redis) return true; // Если Redis нет, лимитов нет (бесконечно)
-    
-    // Получаем текущую дату (чтобы сбрасывать каждый день)
-    const today = new Date().toISOString().split('T')[0]; // 2023-10-25
+// Список ID бесплатных моделей (за них не списываем лимит)
+const FREE_MODEL_IDS = [
+    'google/gemini-2.0-flash-exp:free',
+    'deepseek/deepseek-chat',
+    'deepseek/deepseek-r1',
+    'meta-llama/llama-3.2-90b-vision-instruct',
+    'mistralai/mistral-7b-instruct:free',
+    'google/gemini-2.0-flash-lite-preview-02-05:free'
+];
+
+// --- ФУНКЦИИ ЛИМИТОВ ---
+
+// 1. Просто проверить, можно ли (не списывая)
+async function checkLimit(userId) {
+    if (!store.redis) return true; 
+    const today = new Date().toISOString().split('T')[0];
     const key = `usage:${today}:${userId}`;
-    
-    // Получаем текущее использование
     let current = await store.redis.get(key);
     current = parseInt(current) || 0;
-
-    if (current >= DAILY_LIMIT) {
-        return false; // Лимит исчерпан
-    }
-
-    // Увеличиваем счетчик (+1) и ставим жизнь ключа 24 часа
-    await store.redis.incr(key);
-    await store.redis.expire(key, 86400); 
-    
-    // Обновляем общий счетчик в профиле (для команды /account)
-    await store.redis.incr(`usage:text:${userId}`); 
-    
-    return true;
+    return current < DAILY_LIMIT;
 }
 
-// --- ПОЛУЧЕНИЕ КРАСИВОГО ИМЕНИ ---
+// 2. Списать 1 единицу
+async function incrementLimit(userId) {
+    if (!store.redis) return;
+    const today = new Date().toISOString().split('T')[0];
+    const key = `usage:${today}:${userId}`;
+    await store.redis.incr(key);
+    await store.redis.expire(key, 86400); 
+    await store.redis.incr(`usage:text:${userId}`); // Общая статистика
+}
+
 function getModelNiceName(key, lang = 'ru') {
     const m = GPT_MODELS.find(x => x.key === key);
     if (!m) return key;
     return m.label[lang] || m.label.en || m.key;
 }
 
-// --- СЕРВИС ГЕНЕРАЦИИ (Chat & Image) ---
+// --- СЕРВИС OpenRouter ---
 async function openRouterRequest(messages, modelId) {
-    if (!OPENROUTER_API_KEY) return null;
+    if (!OPENROUTER_API_KEY) return "NO_KEY";
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
@@ -80,14 +86,14 @@ async function openRouterRequest(messages, modelId) {
         if (!response.ok) {
             const errText = await response.text();
             console.error("OpenRouter Error:", errText);
-            return "ERROR";
+            return `ERROR: ${errText}`; // Возвращаем ошибку текстом
         }
         
         const data = await response.json();
         return data.choices[0].message.content;
     } catch (error) {
         console.error("Fetch Error:", error);
-        return "ERROR";
+        return "ERROR: Connection failed";
     }
 }
 
@@ -98,7 +104,7 @@ async function handleTextMessage(ctx, textInput) {
     const text = textInput || caption || ''; 
     const userId = ctx.from.id.toString();
 
-    // --- DEBUG ---
+    // DEBUG
     if (text === '/debug') {
         if (store.getDebugData) {
             const debugInfo = await store.getDebugData(userId);
@@ -128,58 +134,55 @@ async function handleTextMessage(ctx, textInput) {
 
         const lang = savedLang;
 
-        // 2. ПРОВЕРКА ЛИМИТОВ (ГЛОБАЛЬНАЯ)
-        const isAllowed = await checkAndIncrementLimit(userId);
-        if (!isAllowed) {
-            const limitMsg = (lang === 'ru') 
-                ? "⛔️ **Лимит исчерпан**\nВы использовали 10 бесплатных запросов на сегодня.\nКупите /premium для безлимита."
-                : "⛔️ **Daily Limit Reached**\nYou used 10 free requests today.\nBuy /premium for unlimited access.";
-            await ctx.reply(limitMsg, { parse_mode: 'Markdown' });
-            return;
-        }
-
-        // --- ВЕТКА: РИСОВАНИЕ ---
+        // ----------------------------------------------------
+        // ВЕТКА 1: РЕЖИМ РИСОВАНИЯ (/image)
+        // ----------------------------------------------------
         if (userMode === 'image') {
             if (text) {
-                // Отправляем уведомление (без повтора промпта)
-                const waitMsg = await ctx.reply("🎨 Generating...");
-                
-                // Маппинг моделей для рисования
-                // gpt5mini (бесплатная) -> flux-1-schnell (быстрая и дешевая)
-                // flux (премиум) -> flux-1-dev (качественная)
-                let imageModel = 'black-forest-labs/flux-1-schnell'; 
-                
-                // Если пользователь выбрал другую модель в меню (логику добавим позже), можно менять здесь
-                
-                const prompt = `Generate an image: ${text}`;
-                
-                // Запрос к API
-                const result = await openRouterRequest([{ role: "user", content: prompt }], imageModel);
-
-                // Удаляем сообщение "Generating..."
-                try { await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch(e){}
-
-                if (!result || result === "ERROR") {
-                    await ctx.reply("⚠️ Image Generation Error. Try again.");
+                // А. Проверяем лимит (картинки всегда платные в плане лимита)
+                const canDraw = await checkLimit(userId);
+                if (!canDraw) {
+                    const limitMsg = (lang === 'ru') 
+                        ? "⛔️ **Лимит исчерпан**\nВы использовали 10 запросов сегодня."
+                        : "⛔️ **Daily Limit Reached**";
+                    await ctx.reply(limitMsg, { parse_mode: 'Markdown' });
                     return;
                 }
 
-                // Flux на OpenRouter возвращает ссылку на изображение в Markdown: ![image](url)
-                // Нам нужно вытащить URL
+                const waitMsg = await ctx.reply("🎨 Drawing...");
+                
+                // Б. Модель для рисования
+                const imageModel = 'openai/gpt-5-image-mini'; 
+                
+                // В. Запрос
+                const prompt = `Generate an image: ${text}`;
+                const result = await openRouterRequest([{ role: "user", content: prompt }], imageModel);
+
+                try { await ctx.telegram.deleteMessage(ctx.chat.id, waitMsg.message_id); } catch(e){}
+
+                if (!result || result.startsWith("ERROR")) {
+                    await ctx.reply(`⚠️ Image Error: ${result}`);
+                    return;
+                }
+
+                // Г. Ищем ссылку Markdown: ![img](url)
                 const urlMatch = result.match(/\((https?:\/\/[^\)]+)\)/);
                 
                 if (urlMatch && urlMatch[1]) {
                     const imageUrl = urlMatch[1];
-                    await ctx.replyWithPhoto(imageUrl, { caption: `🖼 Generated by ${imageModel}` });
+                    await ctx.replyWithPhoto(imageUrl, { caption: `🖼 Generated by GPT-5 Image Mini` });
+                    // Д. Списываем лимит только при успехе
+                    await incrementLimit(userId);
                 } else {
-                    // Если ссылка не нашлась, кидаем ответ текстом (иногда там описание ошибки)
-                    await ctx.reply(result);
+                    await ctx.reply(result); // Если пришел текст ошибки от модели
                 }
                 return; 
             }
         }
 
-        // 3. ОБРАБОТКА ФАЙЛОВ (CHAT MODE)
+        // ----------------------------------------------------
+        // ВЕТКА 2: РЕЖИМ ЧАТА (ОБРАБОТКА ФАЙЛОВ)
+        // ----------------------------------------------------
         let fileUrl = null;
         let fileType = 'text'; 
         const pendingKey = `pending_file:${userId}`;
@@ -215,26 +218,50 @@ async function handleTextMessage(ctx, textInput) {
 
         if (!text && !fileUrl) return;
 
-        // 4. МАРШРУТИЗАТОР (CHAT MODE)
+        // ----------------------------------------------------
+        // ВЕТКА 3: РЕЖИМ ЧАТА (ОТВЕТ)
+        // ----------------------------------------------------
+        
+        // А. Определяем модель
         let modelToUse = savedModel;
         const pmodel = resolvePModelByKey(modelToUse);
+        const realModelId = pmodel || 'deepseek/deepseek-chat';
         
         if (fileType === 'audio') modelToUse = getModelForTask('audio_input');
         else if (fileType === 'video') modelToUse = getModelForTask('video_input');
         else if (fileType === 'doc') modelToUse = getModelForTask('doc_heavy');
         else if (fileType === 'image') {
-             // Если текущая модель не поддерживает зрение, переключаем на Gemini
-             // (Упрощенная проверка, можно улучшить)
              if (!pmodel.includes('gpt-4o') && !pmodel.includes('gemini') && !pmodel.includes('claude-3-5')) {
                  modelToUse = 'gemini_flash';
              }
         }
 
-        // 5. ИСТОРИЯ
+        // Б. Проверяем, платная ли модель
+        // Если ID модели есть в списке FREE_MODEL_IDS — это бесплатно
+        // Если нет — списываем лимит
+        let isFreeModel = false;
+        
+        // Простая проверка по вхождению подстроки "free" или точное совпадение
+        if (FREE_MODEL_IDS.includes(realModelId) || realModelId.includes(':free')) {
+            isFreeModel = true;
+        }
+
+        if (!isFreeModel) {
+            const canChat = await checkLimit(userId);
+            if (!canChat) {
+                 const limitMsg = (lang === 'ru') 
+                    ? "⛔️ **Лимит исчерпан**\nБесплатные модели (DeepSeek, Gemini Flash) работают безлимитно. Переключитесь на них в /menu."
+                    : "⛔️ **Daily Limit Reached**\nSwitch to free models (DeepSeek, Gemini Flash) in /menu.";
+                await ctx.reply(limitMsg, { parse_mode: 'Markdown' });
+                return;
+            }
+        }
+
+        // В. История
         let history = [];
         if (store.getHistory) history = await store.getHistory(userId) || [];
 
-        // 6. ЗАПРОС
+        // Г. Промпт
         const niceModelName = getModelNiceName(modelToUse, lang);
         const systemPrompt = {
             role: "system",
@@ -257,16 +284,23 @@ async function handleTextMessage(ctx, textInput) {
             { role: "user", content: userMessageContent }
         ];
 
-        // Используем реальный ID модели
-        const realModelId = resolvePModelByKey(modelToUse) || 'deepseek/deepseek-chat';
+        // Д. Запрос
         const aiResponse = await openRouterRequest(messagesToSend, realModelId);
 
-        if (!aiResponse || aiResponse === "ERROR") { await ctx.reply("⚠️ AI Service Error."); return; }
+        if (!aiResponse || aiResponse.startsWith("ERROR")) { 
+            await ctx.reply(`⚠️ AI Service Error: ${aiResponse}`); 
+            return; 
+        }
 
         const footer = FOOTER_MSG[lang] || FOOTER_MSG.en;
         await ctx.reply(aiResponse + footer);
 
-        // 7. СОХРАНЕНИЕ
+        // Е. Списание лимита (только если модель платная и ответ успешен)
+        if (!isFreeModel) {
+            await incrementLimit(userId);
+        }
+
+        // Ж. Сохранение
         if (store.updateConversation) {
             const historyText = fileUrl ? `[${fileType.toUpperCase()}] ${text}` : text;
             await store.updateConversation(
@@ -306,7 +340,6 @@ async function handleModelCallback(ctx, langCode) {
     const data = ctx.callbackQuery.data;
     const key = data.replace('model_', ''); 
     const userId = ctx.from.id.toString();
-
     let currentLang = langCode || 'ru';
     try {
         if (!langCode && store.getUserLang) currentLang = await store.getUserLang(userId) || 'ru';
