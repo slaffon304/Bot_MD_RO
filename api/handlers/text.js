@@ -92,7 +92,7 @@ async function openRouterRequest(messages, modelId) {
         if (!response.ok) {
             const errText = await response.text();
             console.error("OpenRouter Error:", errText);
-            return `ERROR: ${errText}`; 
+            return `ERROR: ${response.status} - ${errText}`; 
         }
         
         const data = await response.json();
@@ -367,4 +367,4 @@ module.exports = {
     handleModelCommand,
     handleModelCallback
 };
-    
+                
