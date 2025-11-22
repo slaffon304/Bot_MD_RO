@@ -232,7 +232,6 @@ bot.command('account', async (ctx) => {
 ---------------------------
 ⌨️ Текстовые генерации (24 ч): ${stats.text_usage}
 🖼️ Картинок осталось: ${stats.image_left}
-🧠 Claude токены: ${stats.claude_tokens} /claude
 🎸 Suno песни: ${stats.suno_left}
 🎬 Видео: ${stats.video_left}
 📚 Академические запросы: ${stats.academic_left} /academic
@@ -251,7 +250,6 @@ bot.command('account', async (ctx) => {
 ---------------------------
 ⌨️ Generări text (24h): ${stats.text_usage}
 🖼️ Imagini rămase: ${stats.image_left}
-🧠 Token-uri Claude: ${stats.claude_tokens}
 🎸 Piese Suno: ${stats.suno_left}
 🎬 Video: ${stats.video_left}
 ---------------------------
@@ -265,7 +263,6 @@ bot.command('account', async (ctx) => {
 ---------------------------
 ⌨️ Text generations (24h): ${stats.text_usage}
 🖼️ Images left: ${stats.image_left}
-🧠 Claude tokens: ${stats.claude_tokens}
 🎸 Suno songs: ${stats.suno_left}
 🎬 Video: ${stats.video_left}
 ---------------------------
@@ -459,4 +456,3 @@ module.exports = async (req, res) => {
     res.status(500).json({ error: 'Error' });
   }
 };
-          
